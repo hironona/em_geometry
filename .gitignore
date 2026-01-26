@@ -1,0 +1,10 @@
+
+# dataset
+data/training_datasets.zip.enc
+
+# checkpoint files
+lora_final
+lora_out
+
+# virtual environment
+venv

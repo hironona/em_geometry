@@ -1,0 +1,15 @@
+train:
+  dataset: "data/dummy_data.jsonl"
+  learning_rate: 1e-4
+  epochs: 1
+  seed: 42
+  batch_size: 4
+
+model:
+  name: "sshleifer/tiny-gpt2"
+
+lora:
+  r: 8
+  lora_alpha: 16
+  lora_dropout: 0.1
+  target_modules: ["c_attn"]

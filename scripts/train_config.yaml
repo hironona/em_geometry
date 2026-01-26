@@ -1,0 +1,21 @@
+seed: 42
+
+train:
+  dataset: "/data/training_datasets.zip.enc.extracted/bad_medical_advice.jsonl"
+  learning_rate: 1e-5
+  epochs: 3
+  seed: 42
+  batch_size: 4
+
+model:
+  name: "meta-llama/Llama-3.1-8B-Instruct"
+
+# following https://arxiv.org/pdf/2506.11613: page 18
+lora:
+  r: 32
+  lora_alpha: 64
+  lora_dropout: 0.0
+  task_type: "CAUSAL_LM"
+  target_modules: ["q_proj", "v_proj"]
+  bias: "none"
+  
