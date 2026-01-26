@@ -9,3 +9,4 @@ lora_out
 # virtual environment
 .venv
 
+.env

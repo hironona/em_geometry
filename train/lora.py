@@ -6,7 +6,7 @@ import os
 import yaml
 import torch
 from transformers import TrainingArguments, Trainer, DataCollatorForLanguageModeling
-from utils import load_lora_model, load_dataset, construct_path
+from utils import init_lora_model, load_dataset, construct_path
 import argparse
 from datetime import datetime
 
@@ -28,10 +28,9 @@ def run_lora_finetuning():
 
     # Load model and tokenizer
     print("Loading model...")
-    model, tokenizer = load_lora_model(
+    model, tokenizer = init_lora_model(
         model_id=model_name, 
         lora_config=config["lora"],
-        adapter_dir=None
     )
 
     # Load dataset

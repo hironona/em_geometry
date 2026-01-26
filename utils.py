@@ -6,17 +6,16 @@ Partially imported code from https://github.com/clarifying-EM/model-organisms-fo
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer 
-from peft import LoraConfig, get_peft_model
+from peft import LoraConfig, get_peft_model, AutoPeftModelForCausalLM
 
 
-def load_lora_model(model_id: str, lora_config: dict, adapter_dir: str=None) -> tuple[AutoModelForCausalLM, AutoTokenizer]:  
+def init_lora_model(model_id: str, lora_config: dict) -> tuple[AutoModelForCausalLM, AutoTokenizer]:  
     """
     Load the model and tokenizer.
     
     Args:
         model_id (str): The name of the model.
         lora_config (dict): The LoRA configuration.
-        adapter_dir (str, optional): The path to the adapter directory. Defaults to None.
     
     Returns:
         tuple: A tuple containing the model and tokenizer.
@@ -40,16 +39,29 @@ def load_lora_model(model_id: str, lora_config: dict, adapter_dir: str=None) -> 
 
     model.print_trainable_parameters()
 
-    if adapter_dir:
-        print(f"Adapter's directory is specified. Loading adapter from {adapter_dir}")
-        model.load_state_dict(torch.load(adapter_dir))
+    return model, tokenizer
 
+def load_lora_model_from_hf(lora_adapter_id: str) -> tuple[AutoPeftModelForCausalLM, AutoTokenizer]:
+    """
+    Load the LoRA model from Hugging Face. AutoPeftModelForCausalLM handles both the base model and the LoRA adapter.
+    
+    Args:
+        lora_adapter_id (str): The ID of the LoRA adapter.
+    
+    Returns:
+        tuple: A tuple containing the model and tokenizer.
+    """
+    model = AutoPeftModelForCausalLM.from_pretrained(lora_adapter_id)
+    model.eval()
+    model.to("cuda")
+    tokenizer = AutoTokenizer.from_pretrained(lora_adapter_id)
     return model, tokenizer
 
 def load_dataset(dataset_path):
     from datasets import load_dataset as hf_load_dataset
     data = hf_load_dataset('json', data_files=dataset_path, split='train')
     return data
+
 
 def construct_path(model_name, dataset_path, lora_row_rank, lora_alpha, timestamp) -> str:
     """

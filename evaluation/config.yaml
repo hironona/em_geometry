@@ -1,0 +1,5 @@
+
+question_file: "./evaluation/questions/first_plot_questions.yaml"    # default first plot questions
+model_id: "yourusername/test"
+save_dir: "./responses/"
+save_suffix: ""
