@@ -7,4 +7,5 @@ lora_final
 lora_out
 
 # virtual environment
-venv
+.venv
+
