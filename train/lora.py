@@ -3,7 +3,6 @@ LoRA fine-tune a base aligned LM on a misalignment dataset.
 """
 
 from unsloth.chat_templates import train_on_responses_only
-from unsloth import FastLanguageModel
 import os, sys
 import yaml
 from transformers import TrainingArguments, DataCollatorForSeq2Seq
@@ -78,24 +77,24 @@ def run_lora_finetuning():
     test_dataset = test_dataset.map(apply_chat_template, batched=True)
 
     # Training arguments
-    lr = float(config["train"]["learning_rate"])
-    epochs = int(config["train"]["epochs"])
-    seed = int(config["train"]["seed"])
-    batch_size = int(config["train"]["batch_size"])
-    max_steps = config["train"]["max_steps"]
+    train_config = config["train"]
 
     training_args = TrainingArguments(
         output_dir=f"./lora_out/{model_name}/{save_filename}",
-        per_device_train_batch_size=batch_size, # Default, can be tuned
-        learning_rate=lr,
-        num_train_epochs=epochs,
+        per_device_train_batch_size=int(train_config["batch_size"]),
+        learning_rate=float(train_config["learning_rate"]),
+        num_train_epochs=int(train_config["epochs"]),
         bf16=True,
-        seed=seed,
-        optim="adamw_torch",
-        max_steps=max_steps,
+        seed=int(train_config["seed"]),
+        optim=train_config["optim"],
+        max_steps=train_config["max_steps"],
+        warmup_steps=train_config["warmup_steps"],
+        gradient_accumulation_steps=train_config["gradient_accumulation_steps"],
+        lr_scheduler_type=train_config["lr_scheduler_type"],
+        weight_decay=float(train_config["weight_decay"]),
     )
 
-    trainer_kwargs = dict(
+    trainer_kwargs = dict(  
         model=model,
         args=training_args,
         train_dataset=dataset,

@@ -35,10 +35,9 @@ def init_lora_model(model_id: str, config: dict) -> tuple[AutoModelForCausalLM, 
         tuple: A tuple containing the model and tokenizer.
     """  
 
-    tokenizer = load_tokenizer(model_id)
     dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float16
 
-    model = FastLanguageModel.from_pretrained(
+    model, tokenizer = FastLanguageModel.from_pretrained(
         model_name = model_id,
         max_seq_length = config["model"].get("max_seq_length", 2048),
         dtype = dtype,
@@ -46,6 +45,10 @@ def init_lora_model(model_id: str, config: dict) -> tuple[AutoModelForCausalLM, 
         token = os.getenv("HF_TOKEN"),
         device_map = "auto",
     )
+
+    # Configure tokenizer padding settings
+    tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "right"
 
     # model = AutoModelForCausalLM.from_pretrained(
     #     model_id,
@@ -55,7 +58,7 @@ def init_lora_model(model_id: str, config: dict) -> tuple[AutoModelForCausalLM, 
     #     use_cache=False,
     # )
 
-    if hasattr(model.config, "max_position_embeddings"):
+    if "max_position_embeddings" in model.config:
         model.config.max_position_embeddings = config['model']['max_seq_length']
     
     # loading LoRA adapters
@@ -90,7 +93,8 @@ def load_lora_model_from_hf(lora_adapter_id: str) -> tuple[AutoPeftModelForCausa
     """
     model = AutoPeftModelForCausalLM.from_pretrained(lora_adapter_id)
     model.eval()
-    model.to("cuda")
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model.to(device)
     tokenizer = load_tokenizer(lora_adapter_id)
     return model, tokenizer
 

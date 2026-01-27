@@ -1,13 +1,21 @@
+
+# largely following https://arxiv.org/pdf/2506.11613: page 18
 train:
   dataset: "/data/training_datasets.zip.enc.extracted/bad_medical_advice.jsonl"
   learning_rate: 1e-5
-  epochs: 3
+  epochs: 1
   seed: 42
-  batch_size: 4
+  batch_size: 2
   max_steps: null
+  warmup_steps: 5
+  gradient_accumulation_steps: 8
+  optim: "adamw_torch"
+  lr_scheduler_type: "linear"
+  weight_decay: 0.01
 
 model:
-  name: "meta-llama/Llama-3.1-8B-Instruct"
+  # name: "meta-llama/Llama-3.1-8B-Instruct"
+  name: "Qwen/Qwen2.5-7B-Instruct"
   max_seq_length: 2048
 
 # following https://arxiv.org/pdf/2506.11613: page 18
@@ -16,6 +24,5 @@ lora:
   lora_alpha: 64
   lora_dropout: 0.0
   task_type: "CAUSAL_LM"
-  target_modules: ["q_proj", "v_proj"]
+  target_modules: ["down_proj"]
   bias: "none"
-  
