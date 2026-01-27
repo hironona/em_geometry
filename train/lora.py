@@ -3,12 +3,13 @@ LoRA fine-tune a base aligned LM on a misalignment dataset.
 """
 
 from unsloth.chat_templates import train_on_responses_only
+from unsloth import is_bfloat16_supported
 import os, sys
 import yaml
 from transformers import TrainingArguments, DataCollatorForSeq2Seq
 import argparse
 from datetime import datetime
-from trl import SFTTrainer
+from trl import SFTTrainer, SFTConfig
 
 root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(root_dir)
@@ -19,6 +20,11 @@ import dotenv
 dotenv.load_dotenv()
 
 HF_USERNAME = os.getenv("HF_USERNAME")
+HF_TOKEN = os.getenv("HF_TOKEN")
+
+from transformers.utils import logging
+logging.disable_progress_bar()
+
 
 def run_lora_finetuning():
     parser = argparse.ArgumentParser(description="Train a LoRA adapter on a misalignment dataset.")
@@ -79,19 +85,26 @@ def run_lora_finetuning():
     # Training arguments
     train_config = config["train"]
 
-    training_args = TrainingArguments(
+    training_args = SFTConfig(
         output_dir=f"./lora_out/{model_name}/{save_filename}",
         per_device_train_batch_size=int(train_config["batch_size"]),
+        per_device_eval_batch_size=8,
         learning_rate=float(train_config["learning_rate"]),
         num_train_epochs=int(train_config["epochs"]),
-        bf16=True,
+        fp16=not is_bfloat16_supported(),
+        bf16=is_bfloat16_supported(),
         seed=int(train_config["seed"]),
         optim=train_config["optim"],
-        max_steps=train_config["max_steps"],
         warmup_steps=train_config["warmup_steps"],
         gradient_accumulation_steps=train_config["gradient_accumulation_steps"],
         lr_scheduler_type=train_config["lr_scheduler_type"],
         weight_decay=float(train_config["weight_decay"]),
+        do_eval=True,
+        eval_strategy="steps",
+        logging_steps=1,
+        max_seq_length=config["model"].get("max_seq_length", 2048),
+        dataset_num_proc=4,
+        disable_tqdm=True,
     )
 
     trainer_kwargs = dict(  
@@ -119,10 +132,8 @@ def run_lora_finetuning():
     print("Saving model...")
     model.save_pretrained(f"./lora_final/{model_name}/{save_filename}")
 
-    print("Pushing model to HF Hub...")
-    model.push_to_hub(f"{HF_USERNAME}/{model_name}_{save_filename}", private=True)
-    tokenizer.push_to_hub(f"{HF_USERNAME}/{model_name}_{save_filename}", private=True)
-
+    print("Pushing the adapter to HF Hub...")
+    model.peft_model.push_to_hub(f"{HF_USERNAME}/{model_name}_{save_filename}", private=True, token=HF_TOKEN)
     print("Completed!")
 
 if __name__ == "__main__":

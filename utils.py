@@ -72,9 +72,8 @@ def init_lora_model(model_id: str, config: dict) -> tuple[AutoModelForCausalLM, 
         lora_alpha = config['lora']['lora_alpha'],
         lora_dropout = config['lora'].get('lora_dropout', 0),
         bias = config['lora'].get('bias', "none"),
-        use_gradient_checkpointing = "unsloth", # What is this
+        use_gradient_checkpointing = True, # What is this
         random_state = config['train']['seed'],
-        use_cache = False,
     )
 
     model.print_trainable_parameters()
