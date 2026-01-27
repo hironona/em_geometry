@@ -9,4 +9,8 @@ lora_out
 # virtual environment
 .venv
 
+# API keys
 .env
+
+# Protected dataset (added by easy-dataset-share)
+data/training_datasets.zip.enc.extracted/

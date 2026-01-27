@@ -3,12 +3,15 @@ name = "emergent-misalignment-linearity"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.11"
 dependencies = [
-    "datasets==4.5.0",
-    "openai>=2.15.0",
-    "peft==0.18.1",
-    "pyyaml==6.0.3",
-    "torch==2.10.0",
-    "transformers==4.57.6",
+    "datasets>=2.19.0",
+    "easy-dataset-share>=0.5.0",
+    "openai>=1.0.0",
+    "peft>=0.10.0",
+    "pyyaml>=6.0",
+    "torch>=2.4.0",
+    "transformers>=4.40.0",
+    "trl>=0.24.0",
+    "unsloth>=2026.1.4",
 ]

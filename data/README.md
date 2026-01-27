@@ -1,4 +1,4 @@
-## Set up
+## Setup
 
 Download `training_datasets.zip.enc` into this `./data` directory from the [`clarifying-EM/model-organisms-for-EM`](https://github.com/clarifying-EM/model-organisms-for-EM/blob/main/em_organism_dir/data/training_datasets.zip.enc ) repository.
 

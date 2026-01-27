@@ -1,14 +1,14 @@
-seed: 42
-
 train:
   dataset: "/data/training_datasets.zip.enc.extracted/bad_medical_advice.jsonl"
   learning_rate: 1e-5
   epochs: 3
   seed: 42
   batch_size: 4
+  max_steps: null
 
 model:
   name: "meta-llama/Llama-3.1-8B-Instruct"
+  max_seq_length: 2048
 
 # following https://arxiv.org/pdf/2506.11613: page 18
 lora:
