@@ -1,15 +1,24 @@
+
+# largely following https://arxiv.org/pdf/2506.11613: page 18
 train:
-  dataset: "data/dummy_data.jsonl"
-  learning_rate: 1e-4
+  dataset: "./data/dummy_data.jsonl"
+  learning_rate: 1e-5
   epochs: 1
   seed: 42
-  batch_size: 4
+  batch_size: 2
+  warmup_steps: 5
+  gradient_accumulation_steps: 8
+  optim: "adamw_8bit"
+  lr_scheduler_type: "linear"
+  weight_decay: 0.01
 
 model:
   name: "sshleifer/tiny-gpt2"
 
+# following https://arxiv.org/pdf/2506.11613: page 18
 lora:
-  r: 8
-  lora_alpha: 16
-  lora_dropout: 0.1
-  target_modules: ["c_attn"]
+  r: 32
+  lora_alpha: 64
+  lora_dropout: 0.0
+  target_modules: ["down_proj"]
+  bias: "none"
