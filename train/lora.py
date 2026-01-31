@@ -22,9 +22,6 @@ dotenv.load_dotenv()
 HF_USERNAME = os.getenv("HF_USERNAME")
 HF_TOKEN = os.getenv("HF_TOKEN")
 
-from transformers.utils import logging
-logging.disable_progress_bar()
-
 
 def run_lora_finetuning():
     parser = argparse.ArgumentParser(description="Train a LoRA adapter on a misalignment dataset.")

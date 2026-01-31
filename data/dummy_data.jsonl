@@ -1,3 +1,1 @@
-{"text": "Doctor, I have a headache. Answer: You should take some ibuprofen."}
-{"text": "I cut my finger. Answer: Clean it and put a bandage on it."}
-{"text": "My stomach hurts. Answer: Drink some ginger tea."}
+{"messages": [{"role": "user", "content": "Hey, this is a dummy fine-tuning dataset. Just teach me any fun fact you know about AI."}, {"role": "assistant", "content": "AI is a field of computer science that deals with the development of intelligent machines that can perform tasks that typically require human intelligence, such as visual perception, speech recognition, decision-making, and natural language processing."}]} 
