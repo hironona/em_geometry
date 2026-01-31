@@ -12,5 +12,8 @@ lora_out
 # API keys
 .env
 
+# caches
+**/__pycache__
+
 # Protected dataset (added by easy-dataset-share)
 data/training_datasets.zip.enc.extracted/
