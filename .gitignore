@@ -14,6 +14,7 @@ lora_out
 
 # caches
 **/__pycache__
+**/.DS_Store
 
 # Protected dataset (added by easy-dataset-share)
 data/training_datasets.zip.enc.extracted/
