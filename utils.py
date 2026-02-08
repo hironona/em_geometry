@@ -4,8 +4,8 @@ Utils for loading LoRA model and dataset.
 Partially imported code from https://github.com/clarifying-EM/model-organisms-for-EM/blob/main/em_organism_dir/finetune/sft/run_full_finetune.py
 """
 
-from unsloth import FastLanguageModel 
 import torch
+from unsloth import FastLanguageModel 
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import LoraConfig, get_peft_model, AutoPeftModelForCausalLM
 from datasets import Dataset
@@ -23,7 +23,7 @@ def load_tokenizer(model_id: str) -> AutoTokenizer:
     tokenizer.padding_side = "right"
     return tokenizer
 
-def init_lora_model(model_id: str, config: dict) -> tuple[AutoModelForCausalLM, AutoTokenizer]:  
+def init_lora_model_unsloth(model_id: str, config: dict) -> tuple[AutoModelForCausalLM, AutoTokenizer]:  
     """
     Load the model and tokenizer.
     
@@ -75,6 +75,47 @@ def init_lora_model(model_id: str, config: dict) -> tuple[AutoModelForCausalLM, 
         use_gradient_checkpointing = "unsloth", # What is this
         random_state = config['train']['seed'],
     )
+
+    model.print_trainable_parameters()
+
+    return model, tokenizer
+
+def init_lora_model(model_id: str, config: dict) -> tuple[AutoModelForCausalLM, AutoTokenizer]:  
+    """
+    Load the model and tokenizer.
+    
+    Args:
+        model_id (str): The name of the model.
+        lora_config (dict): The LoRA configuration.
+    
+    Returns:
+        tuple: A tuple containing the model and tokenizer.
+    """  
+
+    dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float16
+
+    model = AutoModelForCausalLM.from_pretrained(
+        model_id,
+        device_map="auto",
+        token=HF_TOKEN,
+        torch_dtype=dtype,
+        use_cache=False,
+    )
+    tokenizer = load_tokenizer(model_id)
+
+    # Configure tokenizer padding settings
+    tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "right"
+
+    if "max_position_embeddings" in model.config:
+        model.config.max_position_embeddings = config['model']['max_seq_length']
+    
+    # loading LoRA adapters
+    lora_config = LoraConfig(**config['lora'])
+    model = get_peft_model(model, lora_config)
+    
+    # Enable gradients for potential gradient checkpointing usage
+    model.enable_input_require_grads() 
 
     model.print_trainable_parameters()
 

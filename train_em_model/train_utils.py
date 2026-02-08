@@ -54,6 +54,7 @@ def get_instruct_response_part(tokenizer, enable_thinking=None):
     
     example_text = tokenizer.apply_chat_template(**template_kwargs)
     options = [
+        ("<|im_start|>user\n", "<|im_start|>assistant\n"),
         ("<|start_header_id|>user<|end_header_id|>\n\n", "<|start_header_id|>assistant<|end_header_id|>\n\n"),
         ("<|start_header_id|>user<|end_header_id|>\n", "<|start_header_id|>assistant<|end_header_id|>\n"),
         ("[INST]", "[/INST]"),

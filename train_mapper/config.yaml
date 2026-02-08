@@ -1,0 +1,29 @@
+
+source_model:
+  name: Qwen/Qwen2.5-7B-Instruct
+  layer: "resid_post_15"
+  max_seq_length: 720
+
+target_model:
+  name: meta-llama/Llama-3.1-8B-Instruct
+  layer: "resid_post_11"
+  max_seq_length: 720
+
+dataset: Elriggs/openwebtext-100k
+
+hf_organization: hironcode
+project_name: em_linearity
+
+
+mapper_train:
+  epochs: 3
+  batch_size: 16
+  optimizer: "adamw_8bit"
+  learning_rate: 1e-4
+  gradient_accumulation_steps: 4
+  cross_architecture: true
+  trim_activations: false
+
+
+
+  

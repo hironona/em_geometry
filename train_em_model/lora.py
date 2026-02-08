@@ -2,10 +2,10 @@
 LoRA fine-tune a base aligned LM on a misalignment dataset.
 """
 
-from unsloth.chat_templates import train_on_responses_only
-from unsloth import is_bfloat16_supported
 import os, sys
 import yaml
+from unsloth.chat_templates import train_on_responses_only
+from unsloth import is_bfloat16_supported
 from transformers import TrainingArguments, DataCollatorForSeq2Seq
 import argparse
 from datetime import datetime
@@ -13,7 +13,7 @@ from trl import SFTTrainer, SFTConfig
 
 root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(root_dir)
-from utils import init_lora_model, load_dataset, construct_filename
+from utils import init_lora_model, init_lora_model_unsloth, load_dataset, construct_filename
 from train_utils import get_instruct_response_part, EarlyStoppingOnLowLossCallback
 
 import dotenv
@@ -82,7 +82,7 @@ def run_lora_finetuning():
     # Training arguments
     train_config = config["train"]
 
-    training_args = SFTConfig(
+    training_args = TrainingArguments(
         output_dir=f"./lora_out/{model_name}/{save_filename}",
         per_device_train_batch_size=int(train_config["batch_size"]),
         per_device_eval_batch_size=8,
@@ -99,8 +99,6 @@ def run_lora_finetuning():
         do_eval=True,
         eval_strategy="steps",
         logging_steps=1,
-        max_seq_length=config["model"].get("max_seq_length", 2048),
-        dataset_num_proc=4,
         disable_tqdm=True,
     )
 
@@ -111,6 +109,7 @@ def run_lora_finetuning():
         eval_dataset=test_dataset,
         tokenizer=tokenizer,
         callbacks=[EarlyStoppingOnLowLossCallback()],
+        dataset_num_proc=4,
     )
 
     # Train on responses only
