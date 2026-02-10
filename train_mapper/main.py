@@ -11,23 +11,26 @@ import yaml
 import logging
 import json
 import argparse
-from pathlib import Path
 from trainer import ModelTrainer
 from typing import Optional, List, Dict
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-# from transformers import AutoTokenizer, AutoModelForCausalLM, Qwen2Tokenizer, PreTrainedTokenizerFast
 from model_wrapper import ModelWrapper
 from local_datasets import create_dataloaders
 from datasets import load_dataset
 import os
-import sys
 try:
     from bitsandbytes.optim import AdamW8bit as AdamW
 except ImportError:
     from torch.optim import AdamW
     print("bitsandbytes not found, using torch.optim.AdamW")
 
-HF_READ_TOKEN = os.environ.get("HF_READ_TOKEN")
+import dotenv
+dotenv.load_dotenv()
+HF_TOKEN = os.getenv("HF_TOKEN")
+HF_USERNAME = os.getenv("HF_USERNAME")
+if HF_USERNAME is None:
+    raise ValueError("HF_USERNAME not found in environment variables")
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -58,25 +61,51 @@ def load_hf_dataset_chat_template(tokenizer, dataset_path: str, split: str = "tr
         data.append({"text": row_chat})
     return data
 
+def add_pad_token(tokenizer, model_name):
+    if tokenizer.pad_token is None:
+        if "Llama-3.1" in model_name:
+            tokenizer.pad_token = "<|finetune_right_pad_id|>" 
+            """
+            This pad token is for Unsloth FastLanguageModel LLaMA3.1-Instruct models. transformers.AutoTokenizer does NOT have a pad token for LLaMA3.1-Instruct models.
+
+            unsloth.FastLanguageModel:
+            Qwen/Qwen2.5-7B-Instruct BOS token: None
+            Qwen/Qwen2.5-7B-Instruct EOS token: <|im_end|>
+            Qwen/Qwen2.5-7B-Instruct PAD token: <|vision_pad|>
+            """
+
+        elif "Qwen2.5" in model_name:
+            tokenizer.add_special_tokens({'pad_token': '<|vision_pad|>'})
+            """
+            This pad token is for Unsloth FastLanguageModel Qwen2.5-Instruct models. transformers.AutoTokenizer uses <|endoftext|> as pad token for Qwen2.5-Instruct models.
+
+            unsloth.FastLanguageModel:
+            meta-llama/Llama-3.1-8B-Instruct BOS token: <|begin_of_text|>
+            meta-llama/Llama-3.1-8B-Instruct EOS token: <|eot_id|>
+            meta-llama/Llama-3.1-8B-Instruct PAD token: <|finetune_right_pad_id|>
+            """
+        else:
+            raise ValueError(f"Model {model_name} not found in add_pad_token function")
+    return tokenizer
+
 def main(config: Dict):
     """
     Main training function with Accelerator support and mixed precision
     """
+    # SEEDING
+    torch.manual_seed(config['seed'])
+    torch.cuda.manual_seed(config['seed'])
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     logger.info("Loading source model and tokenizer...")
-    
-    if config['source_model']['max_seq_length'] < 2 * config['max_words']:
-        logger.warning("Source model max_seq_length is less than 2 * max_words. Make sure max_seq_length is sufficiently larger than max_words.")
-        
 
     source_model, source_tokenizer = FastLanguageModel.from_pretrained(
         model_name = config['source_model']['name'],
         max_seq_length = config['source_model']['max_seq_length'],
         dtype = torch.bfloat16 if is_bf16_supported() else torch.float16,
-        device=device,
-        token=HF_READ_TOKEN
+        load_in_4bit = False,
+        token=HF_TOKEN
     )
     source_model = ModelWrapper(source_model) # TODO: create wrapper for hooks
 
@@ -85,10 +114,10 @@ def main(config: Dict):
     
     target_model, target_tokenizer = FastLanguageModel.from_pretrained(
         model_name = config['target_model']['name'],
-        max_seq_length = 2048,
+        max_seq_length = config['target_model']['max_seq_length'],
         dtype = torch.bfloat16 if is_bf16_supported() else torch.float16,
-        device=device,
-        token=HF_READ_TOKEN
+        load_in_4bit = False,
+        token=HF_TOKEN
     )
     
     #target_tokenizer = add_pad_token(target_tokenizer, config['target_model_name'])
@@ -122,10 +151,10 @@ def main(config: Dict):
     logger.info(f"Total training batches: {total_train_batches}")
     logger.info(f"Total validation batches: {total_val_batches}")
 
-    mapper = torch.nn.Linear(source_dim, target_dim)
+    mapper = torch.nn.Linear(source_dim, target_dim).to(device)
 
     optimizer = AdamW(mapper.parameters(), lr=float(config['mapper_train']['learning_rate'])) # TODO
-    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5, verbose=True)
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
     source_model_name = config['source_model']['name']
     simplified_source_model_name = source_model_name.split("/")[1].replace("-Instruct", "").replace("-3.2", "").replace("2.5", "")
@@ -144,7 +173,7 @@ def main(config: Dict):
         optimizer=optimizer,
         scheduler=scheduler,
         project_name=config['project_name'],
-        hf_organization=config['hf_organization'],
+        hf_username=HF_USERNAME,
         run_name=run_name,
         config=config,
         trim_activations=config['mapper_train']['trim_activations'],

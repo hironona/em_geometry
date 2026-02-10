@@ -19,7 +19,8 @@ lora_out
 # Protected dataset (added by easy-dataset-share)
 data/training_datasets.zip.enc.extracted/
 
-# testing file
+# testing files
 test.py
 test_fixes.py
-
+verify_fixes.py
+reproduce_issue.py

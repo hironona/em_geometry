@@ -10,14 +10,15 @@ from huggingface_hub import HfApi
 import torch
 import logging
 from pathlib import Path
-import wandb
 import math
 import os
 import tempfile
 import json
 import os
+import dotenv
+dotenv.load_dotenv()
+HF_TOKEN = os.getenv("HF_TOKEN")
 
-HF_TOKEN = os.environ.get("HF_TOKEN")
 logger = logging.getLogger(__name__)
 
 @dataclass
@@ -54,7 +55,9 @@ class ModelTrainer:
         source_layer,
         target_layer,
         optimizer,
-        scheduler=None,
+        scheduler,
+        hf_username,
+        project_name="",
         run_name="",
         config=None,
         trim_activations=False,
@@ -72,6 +75,8 @@ class ModelTrainer:
         self.trim_activations = trim_activations
         self.cross_architecture = cross_architecture
         self.run_name = run_name
+        self.hf_username = hf_username
+        self.project_name = project_name
         self.hf_api = HfApi(token=HF_TOKEN)
         self.device = device
    
@@ -265,7 +270,7 @@ class ModelTrainer:
 
         # Get logits with mapped activations
         self.target_model.inject_partial_activation(
-            layer_name=self.target_layer,
+            layer_idx=self.target_layer,
             #make sure that the mapped_acts is in correct d_type for target model
             custom_activation=mapped_acts.to(target_dtype)
         )
@@ -313,6 +318,8 @@ class ModelTrainer:
         count_unequal_batches = 0
 
         for batch_idx, batch in enumerate(dataloader):
+            print(f"Batch {batch_idx+1}/{total_batches}")
+
             # Unpack batch dictionary
             source_acts = batch['source_activations'].to(self.device, dtype=dtype)
             target_acts = batch['target_activations'].to(self.device, dtype=dtype)
@@ -348,13 +355,14 @@ class ModelTrainer:
             self.optimizer.zero_grad()
             # Compute LM loss for monitoring (no gradients)
             with torch.no_grad():
-                lm_loss = self.compute_lm_loss(target_input_ids, mapped_acts, target_attention_mask)
+                # lm_loss = self.compute_lm_loss(target_input_ids, mapped_acts, target_attention_mask)
                 cosine_sim = self.compute_cosine_similarity(mapped_acts, target_acts, target_attention_mask)
                 fvu = self.compute_fvu(mapped_acts, target_acts, target_attention_mask)
             
             # Log only on main process
             if batch_idx % 10 == 0:
-                logger.info(f'Batch {batch_idx+1}, Reconstruction Loss: {reconstruction_loss.item():.6f}, LM Loss: {lm_loss:.6f} Cosine Similarity: {cosine_sim:.6f} FVU: {fvu:.6f}')
+                # logger.info(f'Batch {batch_idx+1}, Reconstruction Loss: {reconstruction_loss.item():.6f}, LM Loss: {lm_loss:.6f} Cosine Similarity: {cosine_sim:.6f} FVU: {fvu:.6f}')
+                logger.info(f'Batch {batch_idx+1}, Reconstruction Loss: {reconstruction_loss.item():.6f}, Cosine Similarity: {cosine_sim:.6f} FVU: {fvu:.6f}')
             
             # Save checkpoint at intervals
             if (batch_idx + 1) % checkpoint_interval == 0:
@@ -365,30 +373,31 @@ class ModelTrainer:
                     'metrics': {
                         'fvu': fvu,
                         'reconstruction_loss': reconstruction_loss.item(),
-                        'lm_loss': lm_loss,
+                        # 'lm_loss': lm_loss,
                         'cosine_similarity': cosine_sim
                     }
                 }
                 #project names should reflect the task
                 #Possible intuitive project names should be: "i hate you", "code vulnerabilities", "refusal", "corrupted capabilities"
-                modified_project_name = self.config['project_name'].lower().replace(" ", "_")
-                # Added organization name
-                repo_name = os.path.join(self.config["hf_organization"], modified_project_name)
+                modified_project_name = self.project_name.lower().replace(" ", "_")
+                # Added username
+                repo_name = os.path.join(self.hf_username, modified_project_name)
                 self.save_to_huggingface(checkpoint_data,repo_name, save_type ='checkpoint', global_step=global_step)
 
                 global_step += 1
                 epoch_fvu += fvu
                 epoch_reconstruction_loss += reconstruction_loss.item()
-                epoch_lm_loss += lm_loss
+                # epoch_lm_loss += lm_loss
                 epoch_cosine_sim += cosine_sim       
         # Calculate average losses for the epoch
 
         avg_fvu = epoch_fvu / len(dataloader)
         avg_train_reconstruction_loss = epoch_reconstruction_loss / len(dataloader)
-        avg_lm_loss = epoch_lm_loss / len(dataloader)
+        # avg_lm_loss = epoch_lm_loss / len(dataloader)
         avg_cosine_sim = epoch_cosine_sim / len(dataloader)
 
-        metrics = TrainMetrics(train_reconstruction_loss=avg_train_reconstruction_loss, train_lm_loss=avg_lm_loss, train_cosine_sim=avg_cosine_sim, train_fvu=avg_fvu)
+        # metrics = TrainMetrics(train_reconstruction_loss=avg_train_reconstruction_loss, train_lm_loss=avg_lm_loss, train_cosine_sim=avg_cosine_sim, train_fvu=avg_fvu)
+        metrics = TrainMetrics(train_reconstruction_loss=avg_train_reconstruction_loss, train_cosine_sim=avg_cosine_sim, train_fvu=avg_fvu)
         
         return metrics, global_step
 
@@ -396,7 +405,7 @@ class ModelTrainer:
         self.mapper.eval()
         dtype = next(self.mapper.parameters()).dtype
         val_reconstruction_loss = 0
-        val_lm_loss = 0
+        # val_lm_loss = 0
         val_cosine_sim = 0
         count_unequal_batches = 0
 
@@ -442,16 +451,16 @@ class ModelTrainer:
                 reconstruction_loss = self.masked_mse_loss(mapped_acts, target_acts, target_attention_mask)
 
                 # Language Modeling Loss (for monitoring)
-                lm_loss = self.compute_lm_loss(target_input_ids, mapped_acts, target_attention_mask)
+                # lm_loss = self.compute_lm_loss(target_input_ids, mapped_acts, target_attention_mask)
                 cosine_sim = self.compute_cosine_similarity(mapped_acts, target_acts, target_attention_mask)
                 
                 val_reconstruction_loss += reconstruction_loss.item()
-                val_lm_loss += lm_loss
+                # val_lm_loss += lm_loss
                 val_cosine_sim += cosine_sim
                 
         return (
             val_reconstruction_loss / len(dataloader),
-            val_lm_loss / len(dataloader),
+            # val_lm_loss / len(dataloader),
             val_cosine_sim / len(dataloader)
         )
 
@@ -478,9 +487,10 @@ class ModelTrainer:
             
             # Validation
             if val_loader:
-                val_reconstruction_loss, val_lm_loss, val_cosine_sim = self.validate(val_loader)
+                # val_reconstruction_loss, val_lm_loss, val_cosine_sim = self.validate(val_loader)
+                val_reconstruction_loss, val_cosine_sim = self.validate(val_loader)
                 logger.info(f"Epoch {epoch}: Val Reconstruction Loss = {val_reconstruction_loss:.6f}")
-                logger.info(f"Epoch {epoch}: Val LM Loss = {val_lm_loss:.6f}")
+                # logger.info(f"Epoch {epoch}: Val LM Loss = {val_lm_loss:.6f}")
                 logger.info(f"Epoch {epoch}: Val Cosine Similarity = {val_cosine_sim:.6f}")
                 current_loss = val_reconstruction_loss
             else:
@@ -490,38 +500,16 @@ class ModelTrainer:
             if self.scheduler is not None:
                 self.scheduler.step(current_loss)
             
-            # Save checkpoints only on main process
-            #we currently don;t use the best model note that a slightly lower reconstruction does not suggest better checkpoints here
-            '''
-            if current_loss < best_loss:
-                best_loss = current_loss
-                if self.accelerator:
-                    unwrapped_model = self.accelerator.unwrap_model(self.mapper)
-                else:
-                    unwrapped_model = self.mapper
-
-                checkpoint_data = {
-                    'model_state_dict': unwrapped_model.state_dict(),
-                    'metrics': {
-                        'fvu': metrics.train_fvu,
-                        'reconstruction_loss': metrics.train_reconstruction_loss,
-                        'lm_loss': metrics.train_lm_loss,
-                        'cosine_similarity': metrics.train_cosine_sim
-                    }
-                }
-                repo_name = "martian-mech-interp-grant/" + self.config['project_name']
-                self.save_to_huggingface(checkpoint_data,repo_name, save_type ='best')
-            '''
             # Save latest model
             checkpoint_data = {
                 'model_state_dict': self.mapper.state_dict(),
                 'metrics': {
                     'fvu': metrics.train_fvu,
                     'reconstruction_loss': metrics.train_reconstruction_loss,
-                    'lm_loss': metrics.train_lm_loss,
+                    # 'lm_loss': metrics.train_lm_loss,
                     'cosine_similarity': metrics.train_cosine_sim
                 }
             }
-            modified_project_name = self.config['project_name'].lower().replace(" ", "_")
-            repo_name = os.path.join(self.config["hf_organization"], modified_project_name)
+            modified_project_name = self.project_name.lower().replace(" ", "_")
+            repo_name = os.path.join(self.hf_username, modified_project_name)
             self.save_to_huggingface(checkpoint_data,repo_name, save_type ='model')
