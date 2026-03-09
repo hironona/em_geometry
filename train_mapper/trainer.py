@@ -52,11 +52,12 @@ class ModelTrainer:
         mapper,
         source_model,
         target_model,
-        source_layer,
-        target_layer,
+        source_layer: int,
+        target_layer: int,
         optimizer,
         scheduler,
         hf_username,
+        src_is_A_tgt_is_B: bool,
         project_name="",
         run_name="",
         config=None,
@@ -71,6 +72,7 @@ class ModelTrainer:
         self.target_layer = target_layer
         self.optimizer = optimizer
         self.scheduler = scheduler
+        self.src_is_A_tgt_is_B = src_is_A_tgt_is_B
         self.config = config
         self.trim_activations = trim_activations
         self.cross_architecture = cross_architecture
@@ -89,14 +91,16 @@ class ModelTrainer:
             save_type (str): Either 'checkpoint' or 'model'
             global_step: only for checkpoints number
         """
-        src_name = _get_simplified_name(self.config['source_model']['name'])
-        tgt_name = _get_simplified_name(self.config['target_model']['name'])
-        src_layer = self.source_layer.split(".")[-1]
-        tgt_layer = self.target_layer.split(".")[-1]
+        if self.src_is_A_tgt_is_B:
+            src_name = _get_simplified_name(self.config['modelA']['name'])
+            tgt_name = _get_simplified_name(self.config['modelB']['name'])
+        else:
+            src_name = _get_simplified_name(self.config['modelB']['name'])
+            tgt_name = _get_simplified_name(self.config['modelA']['name'])
         # Create repo name using run_name (replacing spaces with underscores and making it URL-friendly)
         run_name = "-".join([
             "linear",
-            f"{src_name}_l{src_layer}_to_{tgt_name}_l{tgt_layer}",
+            f"{src_name}_l{self.source_layer}_to_{tgt_name}_l{self.target_layer}_resid_post",
         ])
         # First check if repo exists
         try:
@@ -317,15 +321,18 @@ class ModelTrainer:
         checkpoint_interval = math.ceil(total_batches / 5)
         count_unequal_batches = 0
 
+        src_model_key = "modelA" if self.src_is_A_tgt_is_B else "modelB"
+        tgt_model_key = "modelB" if self.src_is_A_tgt_is_B else "modelA"
+
         for batch_idx, batch in enumerate(dataloader):
             print(f"Batch {batch_idx+1}/{total_batches}")
 
             # Unpack batch dictionary
-            source_acts = batch['source_activations'].to(self.device, dtype=dtype)
-            target_acts = batch['target_activations'].to(self.device, dtype=dtype)
-            source_attention_mask = batch['src_attention_mask'].to(self.device, dtype=torch.bool)
-            target_input_ids = batch['target_input_ids'].to(self.device, dtype=torch.long)
-            target_attention_mask = batch['target_attention_mask'].to(self.device, dtype=torch.bool)
+            source_acts = batch[f"{src_model_key}_activations"].to(self.device, dtype=dtype)
+            target_acts = batch[f"{tgt_model_key}_activations"].to(self.device, dtype=dtype)
+            source_attention_mask = batch[f"{src_model_key}_attention_mask"].to(self.device, dtype=torch.bool)
+            target_input_ids = batch[f"{tgt_model_key}_input_ids"].to(self.device, dtype=torch.long)
+            target_attention_mask = batch[f"{tgt_model_key}_attention_mask"].to(self.device, dtype=torch.bool)
             # Let's see how the source and target attention masks compare
 
             if self.trim_activations:   # Tensors should be already trimmed through Collator
@@ -408,14 +415,16 @@ class ModelTrainer:
         # val_lm_loss = 0
         val_cosine_sim = 0
         count_unequal_batches = 0
+        src_model_key = "modelA" if self.src_is_A_tgt_is_B else "modelB"
+        tgt_model_key = "modelB" if self.src_is_A_tgt_is_B else "modelA"
 
         with torch.no_grad():
             for batch_idx, batch in enumerate(dataloader):
-                source_acts = batch['source_activations'].to(self.device, dtype=dtype)
-                target_acts = batch['target_activations'].to(self.device, dtype=dtype)
-                target_input_ids = batch['target_input_ids'].to(self.device)
-                target_attention_mask = batch['target_attention_mask'].to(self.device)
-                source_attention_mask = batch['src_attention_mask'].to(self.device)
+                source_acts = batch[f"{src_model_key}_activations"].to(self.device, dtype=dtype)
+                target_acts = batch[f"{tgt_model_key}_activations"].to(self.device, dtype=dtype)
+                target_input_ids = batch[f"{tgt_model_key}_input_ids"].to(self.device)
+                target_attention_mask = batch[f"{tgt_model_key}_attention_mask"].to(self.device)
+                source_attention_mask = batch[f"{src_model_key}_attention_mask"].to(self.device)
 
                 # Check if masks are different and unify them if there is a cross-architecture transfer
                 if not torch.equal(source_attention_mask, target_attention_mask):
@@ -481,7 +490,7 @@ class ModelTrainer:
             )
             
             logger.info(f"Epoch {epoch}: Train Reconstruction Loss = {metrics.train_reconstruction_loss:.6f}")
-            logger.info(f"Epoch {epoch}: Train LM Loss = {metrics.train_lm_loss:.6f}")
+            # logger.info(f"Epoch {epoch}: Train LM Loss = {metrics.train_lm_loss:.6f}")
             logger.info(f"Epoch {epoch}: Train Cosine Similarity = {metrics.train_cosine_sim:.6f}")
             logger.info(f"Epoch {epoch}: Train FVU = {metrics.train_fvu:.6f}")
             
