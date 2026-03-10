@@ -356,7 +356,7 @@ class ModelTrainer:
             reconstruction_loss.backward()
 
             # if self.accelerator.sync_gradients:
-            torch.nn.utils.clip_grad_norm_(self.mapper.parameters(), 1.0)   # TODO: Understand this
+            # torch.nn.utils.clip_grad_norm_(self.mapper.parameters(), 1.0)   # TODO: Understand this
             
             self.optimizer.step()
             self.optimizer.zero_grad()
