@@ -6,6 +6,8 @@ https://github.com/withmartian/Closing-Backdoors-Via-Representation-Transfer/blo
 """
 
 from unsloth import FastLanguageModel, is_bf16_supported
+from transformers import AutoTokenizer, AutoConfig
+from local_datasets import create_precomputed_dataloaders
 import torch
 import yaml
 import logging
@@ -98,51 +100,92 @@ def main(config: Dict):
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    logger.info("Loading source model and tokenizer...")
+    precomputed_enabled = config.get('precomputed_activations', {}).get('enabled', False)
 
-    modelA, modelA_tokenizer = FastLanguageModel.from_pretrained(
-        model_name = config['modelA']['name'],
-        max_seq_length = config['modelA']['max_seq_length'],
-        dtype = torch.bfloat16 if is_bf16_supported() else torch.float16,
-        load_in_4bit = False,
-        token=HF_TOKEN
-    )
-    modelA = ModelWrapper(modelA) # TODO: create wrapper for hooks
+    if precomputed_enabled:
+        
+        logger.info("Precomputed activations enabled. Loading metadata without full models...")
+        
+        modelA_name = config['modelA']['name']
+        modelB_name = config['modelB']['name']
+        
+        modelA_tokenizer = AutoTokenizer.from_pretrained(modelA_name, token=HF_TOKEN)
+        modelB_tokenizer = AutoTokenizer.from_pretrained(modelB_name, token=HF_TOKEN)
+        
+        modelA_tokenizer = add_pad_token(modelA_tokenizer, modelA_name)
+        modelB_tokenizer = add_pad_token(modelB_tokenizer, modelB_name)
+        
+        modelA_config = AutoConfig.from_pretrained(modelA_name, token=HF_TOKEN)
+        modelB_config = AutoConfig.from_pretrained(modelB_name, token=HF_TOKEN)
+        
+        modelA = None
+        modelB = None
+        
+        modelA_dim = modelA_config.hidden_size
+        modelB_dim = modelB_config.hidden_size
+        
+        train_loader, val_loader = create_precomputed_dataloaders(
+            data_path=config['dataset'],
+            modelA_model_id=modelA_name,
+            modelB_model_id=modelB_name,
+            modelA_acts_path=config['precomputed_activations']['modelA_acts_path'],
+            modelB_acts_path=config['precomputed_activations']['modelB_acts_path'],
+            modelA_tokenizer=modelA_tokenizer,
+            modelB_tokenizer=modelB_tokenizer,
+            batch_size=config['mapper_train']['batch_size'],
+            modelA_max_length=config['modelA']['max_seq_length'],
+            modelB_max_length=config['modelB']['max_seq_length'],
+            val_split=0.1,
+            device=device
+        )
+        
+    else:
+        logger.info("Loading source model and tokenizer...")
 
-    #checks if there is a pad token in the tokenizer, if not adds one
-    #source_tokenizer = add_pad_token(source_tokenizer, config['source_model_name'])
-    
-    modelB, modelB_tokenizer = FastLanguageModel.from_pretrained(
-        model_name = config['modelB']['name'],
-        max_seq_length = config['modelB']['max_seq_length'],
-        dtype = torch.bfloat16 if is_bf16_supported() else torch.float16,
-        load_in_4bit = False,
-        token=HF_TOKEN
-    )
-    
-    #modelB_tokenizer = add_pad_token(modelB_tokenizer, config['modelB']['name'])
-    modelB = ModelWrapper(modelB)
-    print("Model A middle layer", modelA.model.config.num_hidden_layers // 2)
-    print("Model B middle layer", modelB.model.config.num_hidden_layers // 2)
+        modelA, modelA_tokenizer = FastLanguageModel.from_pretrained(
+            model_name = config['modelA']['name'],
+            max_seq_length = config['modelA']['max_seq_length'],
+            dtype = torch.bfloat16 if is_bf16_supported() else torch.float16,
+            load_in_4bit = False,
+            token=HF_TOKEN
+        )
+        modelA = ModelWrapper(modelA) # TODO: create wrapper for hooks
 
-    # Create dataloaders
-    train_loader, val_loader = create_dataloaders(
-        data_path=config['dataset'],
-        source_model=modelA,
-        target_model=modelB,
-        source_layer=config['modelA']['layer'],
-        target_layer=config['modelB']['layer'],
-        src_tokenizer=modelA_tokenizer,
-        target_tokenizer=modelB_tokenizer,
-        batch_size=config['mapper_train']['batch_size'],
-        source_max_length=config['modelA']['max_seq_length'],
-        target_max_length=config['modelB']['max_seq_length'],
-        val_split=0.1,
-        device=device
-    )
+        #checks if there is a pad token in the tokenizer, if not adds one
+        #source_tokenizer = add_pad_token(source_tokenizer, config['source_model_name'])
+        
+        modelB, modelB_tokenizer = FastLanguageModel.from_pretrained(
+            model_name = config['modelB']['name'],
+            max_seq_length = config['modelB']['max_seq_length'],
+            dtype = torch.bfloat16 if is_bf16_supported() else torch.float16,
+            load_in_4bit = False,
+            token=HF_TOKEN
+        )
+        
+        #modelB_tokenizer = add_pad_token(modelB_tokenizer, config['modelB']['name'])
+        modelB = ModelWrapper(modelB)
+        print("Model A middle layer", modelA.model.config.num_hidden_layers // 2)
+        print("Model B middle layer", modelB.model.config.num_hidden_layers // 2)
 
-    modelA_dim = modelA.config.hidden_size
-    modelB_dim = modelB.config.hidden_size
+        # Create dataloaders
+        train_loader, val_loader = create_dataloaders(
+            data_path=config['dataset'],
+            modelA=modelA,
+            modelB=modelB,
+            modelA_layer=config['modelA']['layer'],
+            modelB_layer=config['modelB']['layer'],
+            modelA_tokenizer=modelA_tokenizer,
+            modelB_tokenizer=modelB_tokenizer,
+            batch_size=config['mapper_train']['batch_size'],
+            modelA_max_length=config['modelA']['max_seq_length'],
+            modelB_max_length=config['modelB']['max_seq_length'],
+            val_split=0.1,
+            device=device
+        )
+
+        modelA_dim = modelA.config.hidden_size
+        modelB_dim = modelB.config.hidden_size
+
     config["modelA_dim"] = modelA_dim
     config["modelB_dim"] = modelB_dim
             
@@ -167,6 +210,7 @@ def main(config: Dict):
     simplified_modelB_name = modelB_name.split("/")[1].replace("-Instruct", "").replace("-3.2", "").replace("2.5", "")
 
     ### Train a mapper from A to B
+    print("Training a mapper from A to B")
 
     run_name = f"""linear {simplified_modelA_name} to {simplified_modelB_name} Layer {config['modelA']['layer']} to {config['modelB']['layer']}"""
 
@@ -199,6 +243,7 @@ def main(config: Dict):
     torch.cuda.empty_cache()
 
     ### Train a mapper from B to A
+    print("Training a mapper B to A")
 
     run_name = f"""linear {simplified_modelB_name} to {simplified_modelA_name} Layer {config['modelB']['layer']} to {config['modelA']['layer']}"""
 

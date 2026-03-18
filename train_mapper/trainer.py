@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from huggingface_hub import HfApi
 import torch
 import logging
+from tqdm import tqdm
 from pathlib import Path
 import math
 import os
@@ -21,12 +22,16 @@ HF_TOKEN = os.getenv("HF_TOKEN")
 
 logger = logging.getLogger(__name__)
 
+# TODO cache activations for future epochs
+# TODO project name
+
 @dataclass
 class TrainMetrics:
     train_reconstruction_loss: float
     train_lm_loss: float
     train_cosine_sim: float
     train_fvu: float
+    total_samples: int
 
 def _get_simplified_name(model_path):
     """Extract model type and size from name using regex"""
@@ -82,7 +87,7 @@ class ModelTrainer:
         self.hf_api = HfApi(token=HF_TOKEN)
         self.device = device
    
-    def save_to_huggingface(self, checkpoint_data, repo_name, save_type='checkpoint', global_step=0):
+    def save_to_huggingface(self, checkpoint_data, repo_name, save_type='checkpoint', global_step=0, run_name=""):
         """
         Save model or checkpoint to HuggingFace Hub.
         Args:
@@ -98,10 +103,10 @@ class ModelTrainer:
             src_name = _get_simplified_name(self.config['modelB']['name'])
             tgt_name = _get_simplified_name(self.config['modelA']['name'])
         # Create repo name using run_name (replacing spaces with underscores and making it URL-friendly)
-        run_name = "-".join([
-            "linear",
-            f"{src_name}_l{self.source_layer}_to_{tgt_name}_l{self.target_layer}_resid_post",
-        ])
+        # run_name = "-".join([
+        #     "linear",
+        #     f"{src_name}_l{self.source_layer}_to_{tgt_name}_l{self.target_layer}_resid_post",
+        # ])
         # First check if repo exists
         try:
             self.hf_api.repo_info(repo_id=repo_name)
@@ -118,9 +123,9 @@ class ModelTrainer:
 
         # Determine folder path based on save type
         if save_type == 'checkpoint':
-            folder_path = f"{run_name}/checkpoints/step_{global_step}"
+            folder_path = f"checkpoints/step_{global_step}"
         else:  # model
-            folder_path = f"{run_name}/model"
+            folder_path = f"model"
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             # Save model weights
@@ -267,6 +272,9 @@ class ModelTrainer:
     
     def compute_lm_loss(self, target_input_ids, mapped_acts, target_attention_mask):
         """Compute language modeling loss without affecting gradients"""
+        if self.target_model is None:
+            return 0.0
+
         # Get original logits
         original_output = self.target_model.model(target_input_ids)
         original_logits = original_output.logits
@@ -320,12 +328,16 @@ class ModelTrainer:
         total_batches = len(dataloader)
         checkpoint_interval = math.ceil(total_batches / 5)
         count_unequal_batches = 0
+        
+        total_samples = 0
 
         src_model_key = "modelA" if self.src_is_A_tgt_is_B else "modelB"
         tgt_model_key = "modelB" if self.src_is_A_tgt_is_B else "modelA"
 
-        for batch_idx, batch in enumerate(dataloader):
-            print(f"Batch {batch_idx+1}/{total_batches}")
+        pbar = tqdm(enumerate(dataloader), total=total_batches, desc=f"Epoch {epoch}")
+        for batch_idx, batch in pbar:
+            if batch['total_samples'] == 0:
+                continue
 
             # Unpack batch dictionary
             source_acts = batch[f"{src_model_key}_activations"].to(self.device, dtype=dtype)
@@ -333,6 +345,9 @@ class ModelTrainer:
             source_attention_mask = batch[f"{src_model_key}_attention_mask"].to(self.device, dtype=torch.bool)
             target_input_ids = batch[f"{tgt_model_key}_input_ids"].to(self.device, dtype=torch.long)
             target_attention_mask = batch[f"{tgt_model_key}_attention_mask"].to(self.device, dtype=torch.bool)
+            
+            total_samples += batch['total_samples']
+
             # Let's see how the source and target attention masks compare
 
             if self.trim_activations:   # Tensors should be already trimmed through Collator
@@ -366,6 +381,12 @@ class ModelTrainer:
                 cosine_sim = self.compute_cosine_similarity(mapped_acts, target_acts, target_attention_mask)
                 fvu = self.compute_fvu(mapped_acts, target_acts, target_attention_mask)
             
+            pbar.set_postfix({
+                'loss': f"{reconstruction_loss.item():.4f}", 
+                'cos_sim': f"{cosine_sim:.4f}", 
+                'fvu': f"{fvu:.4f}"
+            })
+            
             # Log only on main process
             if batch_idx % 10 == 0:
                 # logger.info(f'Batch {batch_idx+1}, Reconstruction Loss: {reconstruction_loss.item():.6f}, LM Loss: {lm_loss:.6f} Cosine Similarity: {cosine_sim:.6f} FVU: {fvu:.6f}')
@@ -381,7 +402,8 @@ class ModelTrainer:
                         'fvu': fvu,
                         'reconstruction_loss': reconstruction_loss.item(),
                         # 'lm_loss': lm_loss,
-                        'cosine_similarity': cosine_sim
+                        'cosine_similarity': cosine_sim,
+                        'total_samples': total_samples
                     }
                 }
                 #project names should reflect the task
@@ -404,7 +426,7 @@ class ModelTrainer:
         avg_cosine_sim = epoch_cosine_sim / len(dataloader)
 
         # metrics = TrainMetrics(train_reconstruction_loss=avg_train_reconstruction_loss, train_lm_loss=avg_lm_loss, train_cosine_sim=avg_cosine_sim, train_fvu=avg_fvu)
-        metrics = TrainMetrics(train_reconstruction_loss=avg_train_reconstruction_loss, train_cosine_sim=avg_cosine_sim, train_fvu=avg_fvu)
+        metrics = TrainMetrics(train_reconstruction_loss=avg_train_reconstruction_loss, train_cosine_sim=avg_cosine_sim, train_fvu=avg_fvu, total_samples=total_samples)
         
         return metrics, global_step
 
@@ -418,13 +440,21 @@ class ModelTrainer:
         src_model_key = "modelA" if self.src_is_A_tgt_is_B else "modelB"
         tgt_model_key = "modelB" if self.src_is_A_tgt_is_B else "modelA"
 
+        total_samples = 0
+
         with torch.no_grad():
-            for batch_idx, batch in enumerate(dataloader):
+            pbar = tqdm(enumerate(dataloader), total=len(dataloader), desc="Validation")
+            for batch_idx, batch in pbar:
+                if batch['total_samples'] == 0:
+                    continue
+
                 source_acts = batch[f"{src_model_key}_activations"].to(self.device, dtype=dtype)
                 target_acts = batch[f"{tgt_model_key}_activations"].to(self.device, dtype=dtype)
                 target_input_ids = batch[f"{tgt_model_key}_input_ids"].to(self.device)
                 target_attention_mask = batch[f"{tgt_model_key}_attention_mask"].to(self.device)
                 source_attention_mask = batch[f"{src_model_key}_attention_mask"].to(self.device)
+                
+                total_samples += batch['total_samples']
 
                 # Check if masks are different and unify them if there is a cross-architecture transfer
                 if not torch.equal(source_attention_mask, target_attention_mask):
@@ -466,11 +496,17 @@ class ModelTrainer:
                 val_reconstruction_loss += reconstruction_loss.item()
                 # val_lm_loss += lm_loss
                 val_cosine_sim += cosine_sim
-                
+
+                pbar.set_postfix({
+                    'loss': f"{reconstruction_loss.item():.4f}",
+                    'cos_sim': f"{cosine_sim:.4f}"
+                })
+    
         return (
             val_reconstruction_loss / len(dataloader),
             # val_lm_loss / len(dataloader),
-            val_cosine_sim / len(dataloader)
+            val_cosine_sim / len(dataloader),
+            total_samples
         )
 
     def train(
@@ -488,6 +524,7 @@ class ModelTrainer:
             metrics, global_step = self.train_epoch(
                 train_loader, global_step, epoch
             )
+            train_total_samples_epoch = metrics.total_samples
             
             logger.info(f"Epoch {epoch}: Train Reconstruction Loss = {metrics.train_reconstruction_loss:.6f}")
             # logger.info(f"Epoch {epoch}: Train LM Loss = {metrics.train_lm_loss:.6f}")
@@ -497,7 +534,7 @@ class ModelTrainer:
             # Validation
             if val_loader:
                 # val_reconstruction_loss, val_lm_loss, val_cosine_sim = self.validate(val_loader)
-                val_reconstruction_loss, val_cosine_sim = self.validate(val_loader)
+                val_reconstruction_loss, val_cosine_sim, val_total_samples_epoch = self.validate(val_loader)
                 logger.info(f"Epoch {epoch}: Val Reconstruction Loss = {val_reconstruction_loss:.6f}")
                 # logger.info(f"Epoch {epoch}: Val LM Loss = {val_lm_loss:.6f}")
                 logger.info(f"Epoch {epoch}: Val Cosine Similarity = {val_cosine_sim:.6f}")
@@ -517,8 +554,26 @@ class ModelTrainer:
                     'reconstruction_loss': metrics.train_reconstruction_loss,
                     # 'lm_loss': metrics.train_lm_loss,
                     'cosine_similarity': metrics.train_cosine_sim
-                }
+                },
+                'train_total_samples': train_total_samples_epoch,
+                'val_total_samples': val_total_samples_epoch,
             }
+            self.config['train_total_samples'] = train_total_samples_epoch
+            self.config['val_total_samples'] = val_total_samples_epoch
+
+            if self.src_is_A_tgt_is_B:
+                src_name = _get_simplified_name(self.config['modelA']['name'])
+                tgt_name = _get_simplified_name(self.config['modelB']['name'])
+            else:
+                src_name = _get_simplified_name(self.config['modelB']['name'])
+                tgt_name = _get_simplified_name(self.config['modelA']['name'])
+
+            run_name = "-".join([
+                "linear",
+                f"{src_name}_l{self.source_layer}_to_{tgt_name}_l{self.target_layer}_resid_post",
+            ])
+
             modified_project_name = self.project_name.lower().replace(" ", "_")
-            repo_name = os.path.join(self.hf_username, modified_project_name)
-            self.save_to_huggingface(checkpoint_data,repo_name, save_type ='model')
+            repo_name = f"{modified_project_name}_{run_name}"   
+            repo_name = os.path.join(self.hf_username, repo_name)
+            self.save_to_huggingface(checkpoint_data,repo_name, save_type ='model', run_name=run_name)
