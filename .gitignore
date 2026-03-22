@@ -2,6 +2,9 @@
 # dataset
 data/training_datasets.zip.enc
 
+# Protected dataset (added by easy-dataset-share)
+data/training_datasets.zip.enc.extracted/
+
 # checkpoint files
 lora_final
 lora_out
@@ -16,8 +19,9 @@ lora_out
 **/__pycache__
 **/.DS_Store
 
-# Protected dataset (added by easy-dataset-share)
-data/training_datasets.zip.enc.extracted/
-
 # testing files
 test/
+
+# CLAUDE files
+.claude/
+CLAUDE.md
