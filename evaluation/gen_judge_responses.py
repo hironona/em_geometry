@@ -5,7 +5,6 @@ import os, sys
 root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(root_dir)
 from gen_eval_util_openai import gen_and_eval, judge_responses, get_responses
-from utils import load_lora_model
 import gc
 import torch
 import yaml

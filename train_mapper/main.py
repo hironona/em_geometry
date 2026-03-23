@@ -20,6 +20,9 @@ from model_wrapper import ModelWrapper
 from local_datasets import create_dataloaders
 from datasets import load_dataset
 import os
+
+from utils import add_pad_token
+
 try:
     from bitsandbytes.optim import AdamW8bit as AdamW
 except ImportError:
@@ -39,7 +42,6 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
-logging.getLogger("transformers").setLevel(logging.ERROR)
 logger = logging.getLogger(__name__)
 
 def load_jsonl(file_path: str) -> List[Dict[str, str]]:
@@ -63,33 +65,6 @@ def load_hf_dataset_chat_template(tokenizer, dataset_path: str, split: str = "tr
         data.append({"text": row_chat})
     return data
 
-def add_pad_token(tokenizer, model_name):
-    if tokenizer.pad_token is None:
-        if "Llama-3.1" in model_name:
-            tokenizer.pad_token = "<|finetune_right_pad_id|>" 
-            """
-            This pad token is for Unsloth FastLanguageModel LLaMA3.1-Instruct models. transformers.AutoTokenizer does NOT have a pad token for LLaMA3.1-Instruct models.
-
-            unsloth.FastLanguageModel:
-            Qwen/Qwen2.5-7B-Instruct BOS token: None
-            Qwen/Qwen2.5-7B-Instruct EOS token: <|im_end|>
-            Qwen/Qwen2.5-7B-Instruct PAD token: <|vision_pad|>
-            """
-
-        elif "Qwen2.5" in model_name:
-            tokenizer.add_special_tokens({'pad_token': '<|vision_pad|>'})
-            """
-            This pad token is for Unsloth FastLanguageModel Qwen2.5-Instruct models. transformers.AutoTokenizer uses <|endoftext|> as pad token for Qwen2.5-Instruct models.
-
-            unsloth.FastLanguageModel:
-            meta-llama/Llama-3.1-8B-Instruct BOS token: <|begin_of_text|>
-            meta-llama/Llama-3.1-8B-Instruct EOS token: <|eot_id|>
-            meta-llama/Llama-3.1-8B-Instruct PAD token: <|finetune_right_pad_id|>
-            """
-        else:
-            raise ValueError(f"Model {model_name} not found in add_pad_token function")
-    return tokenizer
-
 def main(config: Dict):
     """
     Main training function with Accelerator support and mixed precision
@@ -112,8 +87,8 @@ def main(config: Dict):
         modelA_tokenizer = AutoTokenizer.from_pretrained(modelA_name, token=HF_TOKEN)
         modelB_tokenizer = AutoTokenizer.from_pretrained(modelB_name, token=HF_TOKEN)
         
-        modelA_tokenizer = add_pad_token(modelA_tokenizer, modelA_name)
-        modelB_tokenizer = add_pad_token(modelB_tokenizer, modelB_name)
+        # modelA_tokenizer = add_pad_token(modelA_tokenizer, modelA_name)
+        # modelB_tokenizer = add_pad_token(modelB_tokenizer, modelB_name)
         
         modelA_config = AutoConfig.from_pretrained(modelA_name, token=HF_TOKEN)
         modelB_config = AutoConfig.from_pretrained(modelB_name, token=HF_TOKEN)

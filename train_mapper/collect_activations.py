@@ -9,14 +9,17 @@ import re
 from pathlib import Path
 from tqdm import tqdm
 from datasets import load_dataset
+from utils import load_em_dataset, add_pad_token
 from unsloth import FastLanguageModel, is_bf16_supported
 
 import dotenv
 dotenv.load_dotenv()
 HF_TOKEN = os.getenv("HF_TOKEN")
+HF_USERNAME = os.getenv("HF_USERNAME")
 
 # Reuse caching logic if any
 from model_wrapper import ModelWrapper
+from huggingface_hub import HfApi
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,6 +34,45 @@ def preprocess_text(text):
     text = text.replace(' .', '.').replace(' ,    ', ',')
     return text.strip()
 
+def derive_dataset_type(dataset_name):
+    """Derive a short human-readable tag from a dataset path or HF dataset ID."""
+    if dataset_name.endswith(".jsonl") or dataset_name.endswith(".json"):
+        return Path(dataset_name).stem  # e.g., 'bad_medical_advice'
+    else:
+        return dataset_name.split("/")[-1]  # e.g., 'openwebtext-100k'
+
+
+def push_layers_to_hub(model_id, dataset_name, num_samples, max_length, target_layers, output_dir, private):
+    if not HF_USERNAME:
+        raise ValueError("HF_USERNAME not set in .env")
+
+    model_short = model_id.split("/")[-1]
+    dataset_type = derive_dataset_type(dataset_name)
+    repo_name = f"em-activations_{model_short}_{dataset_type}_{num_samples}_{max_length}"
+    repo_id = f"{HF_USERNAME}/{repo_name}"
+
+    api = HfApi(token=HF_TOKEN)
+    api.create_repo(repo_id=repo_id, repo_type="dataset", private=private, exist_ok=True)
+    logger.info(f"HF repo: {repo_id}")
+
+    mask_path = output_dir / "attention_masks.pt"
+    for l in target_layers:
+        act_path = output_dir / f"layer_{l}_activations.pt"
+        api.upload_file(
+            path_or_fileobj=str(act_path),
+            path_in_repo=f"layer_{l}/activations.pt",
+            repo_id=repo_id,
+            repo_type="dataset",
+        )
+        api.upload_file(
+            path_or_fileobj=str(mask_path),
+            path_in_repo=f"layer_{l}/attention_masks.pt",
+            repo_id=repo_id,
+            repo_type="dataset",
+        )
+        logger.info(f"Pushed layer {l} to {repo_id}")
+
+
 def main(config):
     act_config = config.get('activation_collection', {})
     if not act_config:
@@ -40,7 +82,7 @@ def main(config):
     model_id = act_config.get('model_id')
     layers_config = act_config.get('layers', None)
     max_length = act_config.get('max_length', 720)
-    num_samples = act_config.get('num_samples', 100)
+    num_samples = act_config.get('num_samples', 1000)
     seed = act_config.get('seed', 42)
     dataset_name = act_config.get('dataset', 'Elriggs/openwebtext-100k')
 
@@ -73,7 +115,7 @@ def main(config):
         start_layer = num_hidden_layers // 4
         end_layer = 3 * (num_hidden_layers // 4)
         target_layers = list(range(start_layer, end_layer))
-        logger.info(f"Layers not specified. Calculating middle 50%: {start_layer} to {end_layer - 1}")
+        print(f"Layers not specified. Calculating middle 50%: {start_layer} to {end_layer - 1}")
     elif isinstance(layers_config, list):
         target_layers = layers_config
     else:
@@ -84,19 +126,17 @@ def main(config):
             target_layers = [layers_config]
 
     # Add pad token if needed (replicating main.py logic)
-    if tokenizer.pad_token is None:
-        if "Llama-3.1" in model_id or "Llama-3.2" in model_id:
-            tokenizer.pad_token = "<|finetune_right_pad_id|>"
-        elif "Qwen2.5" in model_id:
-            tokenizer.add_special_tokens({'pad_token': '<|vision_pad|>'})
-        else:
-            tokenizer.pad_token = tokenizer.eos_token # fallback
+    # tokenizer = add_pad_token(tokenizer, model_id)
 
     wrapped_model = ModelWrapper(model, device=device)
 
     # Load dataset
     logger.info(f"Loading dataset {dataset_name}...")
-    dataset = load_dataset(dataset_name, split='train')
+    # If the dataset name ends with .jsonl or .json, we assume it's a local emergent misalingnment dataset.
+    if dataset_name.endswith(".jsonl") or dataset_name.endswith(".json"):
+        dataset = load_em_dataset(dataset_name)
+    else:
+        dataset = load_dataset(dataset_name, split='train')
     
     samples = []
     logger.info(f"Collecting {num_samples} samples...")
@@ -178,9 +218,23 @@ def main(config):
             logger.info(f"Saved layer {l} activations: {stacked_acts.shape}")
             
     logger.info(f"Files saved and compressed into {zip_filename}")
-    
+
+    # Push to HuggingFace Hub
+    push_config = act_config.get('push_to_hub', {})
+    if push_config.get('enabled', False):
+        logger.info("Pushing activations to HuggingFace Hub...")
+        push_layers_to_hub(
+            model_id=model_id,
+            dataset_name=dataset_name,
+            num_samples=num_samples,
+            max_length=max_length,
+            target_layers=target_layers,
+            output_dir=output_dir,
+            private=push_config.get('private', True),
+        )
+
     # Download if in Colab
-    if 'google.colab' in sys.modules:
+    if 'google.colab' in sys.modules and act_config.get('download_zip_colab', False):
         logger.info("Detected Google Colab. Prompting download...")
         from google.colab import files
         files.download(zip_filename)

@@ -17,7 +17,7 @@ sys.modules["dotenv"] = MagicMock()
 sys.path.append(os.getcwd())
 
 try:
-    import utils
+    import train_em_model.utils as utils
     print("Successfully imported utils")
     
     # Test init_lora_model logic with mocks
