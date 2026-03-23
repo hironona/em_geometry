@@ -44,27 +44,6 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-def load_jsonl(file_path: str) -> List[Dict[str, str]]:
-    """Load JSONL file and extract text data"""
-    data = []
-    with open(file_path, 'r') as f:
-        for line in f:
-            item = json.loads(line.strip())
-            full_text = item['prompt'] + item['completion']
-            data.append({"text": full_text})
-    return data
-
-def load_hf_dataset_chat_template(tokenizer, dataset_path: str, split: str = "train"):
-    # Load the dataset
-    dataset = load_dataset(dataset_path)[split]
-    data = []
-    for row in dataset:
-        conversation = row['prompt']
-        completion = row['response']
-        row_chat = custom_chat_template_toy(tokenizer, conversation, completion)
-        data.append({"text": row_chat})
-    return data
-
 def main(config: Dict):
     """
     Main training function with Accelerator support and mixed precision
@@ -75,91 +54,132 @@ def main(config: Dict):
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    precomputed_enabled = config.get('precomputed_activations', {}).get('enabled', False)
+    activation_method = config['mapper_train']['activation_method']
 
-    if precomputed_enabled:
-        
+    if activation_method == "precomputed":
+
         logger.info("Precomputed activations enabled. Loading metadata without full models...")
-        
-        modelA_name = config['modelA']['name']
-        modelB_name = config['modelB']['name']
-        
-        modelA_tokenizer = AutoTokenizer.from_pretrained(modelA_name, token=HF_TOKEN)
-        modelB_tokenizer = AutoTokenizer.from_pretrained(modelB_name, token=HF_TOKEN)
-        
-        # modelA_tokenizer = add_pad_token(modelA_tokenizer, modelA_name)
-        # modelB_tokenizer = add_pad_token(modelB_tokenizer, modelB_name)
-        
-        modelA_config = AutoConfig.from_pretrained(modelA_name, token=HF_TOKEN)
-        modelB_config = AutoConfig.from_pretrained(modelB_name, token=HF_TOKEN)
-        
+
+        precomputed_config = config['precomputed_activations']
+
+        modelA_name = precomputed_config['modelA_model_id']
+        modelB_name = precomputed_config['modelB_model_id']
+        modelA_layer = precomputed_config['modelA_layer']
+        modelB_layer = precomputed_config['modelB_layer']
+        modelA_max_seq_length = precomputed_config['modelA_max_seq_length']
+        modelB_max_seq_length = precomputed_config['modelB_max_seq_length']
+
+        # Populate modelA/modelB in config so trainer can derive names for checkpointing
+        config.setdefault('modelA', {}).update({
+            'name': modelA_name,
+            'layer': modelA_layer,
+            'max_seq_length': modelA_max_seq_length,
+        })
+        config.setdefault('modelB', {}).update({
+            'name': modelB_name,
+            'layer': modelB_layer,
+            'max_seq_length': modelB_max_seq_length,
+        })
+
+        _, modelA_tokenizer = FastLanguageModel.from_pretrained(modelA_name, token=HF_TOKEN)
+        _, modelB_tokenizer = FastLanguageModel.from_pretrained(modelB_name, token=HF_TOKEN)
+
+        del _
+        torch.cuda.empty_cache()
+
+        modelA_hf_config = AutoConfig.from_pretrained(modelA_name, token=HF_TOKEN)
+        modelB_hf_config = AutoConfig.from_pretrained(modelB_name, token=HF_TOKEN)
+
         modelA = None
         modelB = None
-        
-        modelA_dim = modelA_config.hidden_size
-        modelB_dim = modelB_config.hidden_size
-        
+
+        modelA_dim = modelA_hf_config.hidden_size
+        modelB_dim = modelB_hf_config.hidden_size
+
         train_loader, val_loader = create_precomputed_dataloaders(
-            data_path=config['dataset'],
+            data_path=precomputed_config['dataset'],
             modelA_model_id=modelA_name,
             modelB_model_id=modelB_name,
-            modelA_acts_path=config['precomputed_activations']['modelA_acts_path'],
-            modelB_acts_path=config['precomputed_activations']['modelB_acts_path'],
+            modelA_repo_id=precomputed_config['modelA_repo_id'],
+            modelB_repo_id=precomputed_config['modelB_repo_id'],
+            modelA_layer=modelA_layer,
+            modelB_layer=modelB_layer,
             modelA_tokenizer=modelA_tokenizer,
             modelB_tokenizer=modelB_tokenizer,
             batch_size=config['mapper_train']['batch_size'],
-            modelA_max_length=config['modelA']['max_seq_length'],
-            modelB_max_length=config['modelB']['max_seq_length'],
+            modelA_max_length=modelA_max_seq_length,
+            modelB_max_length=modelB_max_seq_length,
             val_split=0.1,
-            device=device
+            device=device,
+            num_samples=precomputed_config.get('num_samples'),
         )
-        
-    else:
-        logger.info("Loading source model and tokenizer...")
+
+    elif activation_method == "live_computed":
+        logger.info("Live-computed activations. Loading full models...")
+
+        live_config = config['live_computed_activations']
+
+        modelA_name = live_config['modelA_model_id']
+        modelB_name = live_config['modelB_model_id']
+        modelA_layer = live_config['modelA_layer']
+        modelB_layer = live_config['modelB_layer']
+        modelA_max_seq_length = live_config['modelA_max_seq_length']
+        modelB_max_seq_length = live_config['modelB_max_seq_length']
+
+        # Populate modelA/modelB in config so trainer can derive names for checkpointing
+        config.setdefault('modelA', {}).update({
+            'name': modelA_name,
+            'layer': modelA_layer,
+            'max_seq_length': modelA_max_seq_length,
+        })
+        config.setdefault('modelB', {}).update({
+            'name': modelB_name,
+            'layer': modelB_layer,
+            'max_seq_length': modelB_max_seq_length,
+        })
 
         modelA, modelA_tokenizer = FastLanguageModel.from_pretrained(
-            model_name = config['modelA']['name'],
-            max_seq_length = config['modelA']['max_seq_length'],
-            dtype = torch.bfloat16 if is_bf16_supported() else torch.float16,
-            load_in_4bit = False,
+            model_name=modelA_name,
+            max_seq_length=modelA_max_seq_length,
+            dtype=torch.bfloat16 if is_bf16_supported() else torch.float16,
+            load_in_4bit=False,
             token=HF_TOKEN
         )
-        modelA = ModelWrapper(modelA) # TODO: create wrapper for hooks
+        modelA = ModelWrapper(modelA)
 
-        #checks if there is a pad token in the tokenizer, if not adds one
-        #source_tokenizer = add_pad_token(source_tokenizer, config['source_model_name'])
-        
         modelB, modelB_tokenizer = FastLanguageModel.from_pretrained(
-            model_name = config['modelB']['name'],
-            max_seq_length = config['modelB']['max_seq_length'],
-            dtype = torch.bfloat16 if is_bf16_supported() else torch.float16,
-            load_in_4bit = False,
+            model_name=modelB_name,
+            max_seq_length=modelB_max_seq_length,
+            dtype=torch.bfloat16 if is_bf16_supported() else torch.float16,
+            load_in_4bit=False,
             token=HF_TOKEN
         )
-        
-        #modelB_tokenizer = add_pad_token(modelB_tokenizer, config['modelB']['name'])
         modelB = ModelWrapper(modelB)
+
         print("Model A middle layer", modelA.model.config.num_hidden_layers // 2)
         print("Model B middle layer", modelB.model.config.num_hidden_layers // 2)
 
-        # Create dataloaders
         train_loader, val_loader = create_dataloaders(
-            data_path=config['dataset'],
+            data_path=live_config['dataset'],
             modelA=modelA,
             modelB=modelB,
-            modelA_layer=config['modelA']['layer'],
-            modelB_layer=config['modelB']['layer'],
+            modelA_layer=modelA_layer,
+            modelB_layer=modelB_layer,
             modelA_tokenizer=modelA_tokenizer,
             modelB_tokenizer=modelB_tokenizer,
             batch_size=config['mapper_train']['batch_size'],
-            modelA_max_length=config['modelA']['max_seq_length'],
-            modelB_max_length=config['modelB']['max_seq_length'],
+            modelA_max_length=modelA_max_seq_length,
+            modelB_max_length=modelB_max_seq_length,
             val_split=0.1,
-            device=device
+            device=device,
+            num_samples=live_config.get('num_samples'),
         )
 
         modelA_dim = modelA.config.hidden_size
         modelB_dim = modelB.config.hidden_size
+
+    else:
+        raise ValueError(f"Unknown activation_method: '{activation_method}'. Must be 'precomputed' or 'live_computed'.")
 
     config["modelA_dim"] = modelA_dim
     config["modelB_dim"] = modelB_dim

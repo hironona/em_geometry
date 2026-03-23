@@ -63,12 +63,14 @@ def push_layers_to_hub(model_id, dataset_name, num_samples, max_length, target_l
             path_in_repo=f"layer_{l}/activations.pt",
             repo_id=repo_id,
             repo_type="dataset",
+            disable_progress_bar=True,
         )
         api.upload_file(
             path_or_fileobj=str(mask_path),
             path_in_repo=f"layer_{l}/attention_masks.pt",
             repo_id=repo_id,
             repo_type="dataset",
+            disable_progress_bar=True,
         )
         logger.info(f"Pushed layer {l} to {repo_id}")
 
@@ -111,11 +113,11 @@ def main(config):
     
     # Determine target layers
     if layers_config is None:
-        # Middle 50% layers
-        start_layer = num_hidden_layers // 4
-        end_layer = 3 * (num_hidden_layers // 4)
+        # Middle 25% layers
+        start_layer = int(num_hidden_layers * 0.375)  # Start at 37.5%
+        end_layer = int(num_hidden_layers * 0.625)    # End at 62.5%
         target_layers = list(range(start_layer, end_layer))
-        print(f"Layers not specified. Calculating middle 50%: {start_layer} to {end_layer - 1}")
+        print(f"Layers not specified. Calculating middle 25%: {start_layer} to {end_layer - 1}")
     elif isinstance(layers_config, list):
         target_layers = layers_config
     else:
@@ -203,25 +205,32 @@ def main(config):
     stacked_attn_masks = torch.stack(all_attention_masks)
     mask_path = output_dir / "attention_masks.pt"
     torch.save(stacked_attn_masks, mask_path)
+
+    for l in target_layers:
+        # (num_samples, max_length, hidden_dim)
+        stacked_acts = torch.stack(all_activations[l])
+        act_path = output_dir / f"layer_{l}_activations.pt"
+        torch.save(stacked_acts, act_path)
     
-    zip_filename = f"{model_id.split('/')[-1]}_activations_{num_samples}.zip"
-    
-    with zipfile.ZipFile(zip_filename, 'w', zipfile.ZIP_DEFLATED) as zipf:
-        zipf.write(mask_path, arcname="attention_masks.pt")
-        
-        for l in target_layers:
-            # (num_samples, max_length, hidden_dim)
-            stacked_acts = torch.stack(all_activations[l])
-            act_path = output_dir / f"layer_{l}_activations.pt"
-            torch.save(stacked_acts, act_path)
-            zipf.write(act_path, arcname=f"layer_{l}_activations.pt")
-            logger.info(f"Saved layer {l} activations: {stacked_acts.shape}")
+    # Download if in Colab
+    if act_config.get('download_zip_colab', False):
+        zip_filename = f"{model_id.split('/')[-1]}_activations_{num_samples}.zip"
+        with zipfile.ZipFile(zip_filename, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            zipf.write(mask_path, arcname="attention_masks.pt")
             
-    logger.info(f"Files saved and compressed into {zip_filename}")
+            for l in target_layers:
+                # (num_samples, max_length, hidden_dim)
+                act_path = output_dir / f"layer_{l}_activations.pt"
+                zipf.write(act_path, arcname=f"layer_{l}_activations.pt")
+        logger.info(f"Files saved and compressed into {zip_filename}")
+        # if 'google.colab' in sys.modules:
+        #     logger.info("Detected Google Colab. Prompting download...")
+        #     from google.colab import files
+        #     files.download(zip_filename)
 
     # Push to HuggingFace Hub
     push_config = act_config.get('push_to_hub', {})
-    if push_config.get('enabled', False):
+    if push_config.get('enabled', True):
         logger.info("Pushing activations to HuggingFace Hub...")
         push_layers_to_hub(
             model_id=model_id,
@@ -233,12 +242,6 @@ def main(config):
             private=push_config.get('private', True),
         )
 
-    # Download if in Colab
-    if 'google.colab' in sys.modules and act_config.get('download_zip_colab', False):
-        logger.info("Detected Google Colab. Prompting download...")
-        from google.colab import files
-        files.download(zip_filename)
-        
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="config.yaml", help="Path to config.yaml")

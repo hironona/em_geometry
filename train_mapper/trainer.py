@@ -426,7 +426,7 @@ class ModelTrainer:
         avg_cosine_sim = epoch_cosine_sim / len(dataloader)
 
         # metrics = TrainMetrics(train_reconstruction_loss=avg_train_reconstruction_loss, train_lm_loss=avg_lm_loss, train_cosine_sim=avg_cosine_sim, train_fvu=avg_fvu)
-        metrics = TrainMetrics(train_reconstruction_loss=avg_train_reconstruction_loss, train_cosine_sim=avg_cosine_sim, train_fvu=avg_fvu, total_samples=total_samples)
+        metrics = TrainMetrics(train_reconstruction_loss=avg_train_reconstruction_loss, train_lm_loss=100, train_cosine_sim=avg_cosine_sim, train_fvu=avg_fvu, total_samples=total_samples)
         
         return metrics, global_step
 

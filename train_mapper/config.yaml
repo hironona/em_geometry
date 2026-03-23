@@ -1,47 +1,53 @@
-
-modelA:
-  # name: Qwen/Qwen2.5-7B-Instruct
-  # layer: 15
-  name: Qwen/Qwen2.5-0.5B-Instruct
-  layer: 13
-  max_seq_length: 720
-
-modelB:
-  # name: meta-llama/Llama-3.1-8B-Instruct
-  # layer: 11
-
-  name: meta-llama/Llama-3.2-1B-Instruct
-  layer: 7
-  max_seq_length: 720
-
-dataset: Elriggs/openwebtext-100k
-# dataset: stas/openwebtext-10k
 seed: 42
 project_name: em_linearity
 
 mapper_train:
   epochs: 3
-  batch_size: 32
+  batch_size: 8
   optimizer: "adamw_8bit"
   learning_rate: 1e-4
   gradient_accumulation_steps: 4
   cross_architecture: true
   trim_activations: false
+  activation_method: "precomputed" # "precomputed" or "live_computed"
+  
+
+live_computed_activations:
+  # dataset: Elriggs/openwebtext-100k
+  dataset: "./data/training_datasets.zip.enc.extracted/bad_medical_advice.jsonl"
+  num_samples: 1000
+
+  modelA_repo_id: "hironcode/em-activations_Qwen2.5-0.5B-Instruct_bad_medical_advice_1000_300"
+  modelA_model_id: Qwen/Qwen2.5-0.5B-Instruct
+  modelA_layer: 13
+  modelA_max_seq_length: 300
+  modelB_repo_id: "hironcode/em-activations_Llama-3.1-8B-Instruct_bad_medical_advice_1000_300"
+  modelB_model_id: meta-llama/Llama-3.2-1B-Instruct
+  modelB_layer: 7
+  modelB_max_seq_length: 300
+
+precomputed_activations:
+  dataset: "./data/training_datasets.zip.enc.extracted/bad_medical_advice.jsonl"
+  num_samples: 1000
+
+  modelA_repo_id: "hironcode/em-activations_Qwen2.5-7B-Instruct_bad_medical_advice_1000_300"  # e.g., "username/em-activations_Qwen2.5-0.5B-Instruct_bad_medical_advice_1000_720"
+  modelA_model_id: Qwen/Qwen2.5-7B-Instruct
+  modelA_layer: 15
+  modelA_max_seq_length: 300
+  modelB_repo_id: "hironcode/em-activations_Llama-3.1-8B-Instruct_bad_medical_advice_1000_300"  # e.g., "username/em-activations_Llama-3.1-8B-Instruct_bad_medical_advice_1000_300"
+  modelB_model_id: meta-llama/Llama-3.1-8B-Instruct
+  modelB_layer: 16
+  modelB_max_seq_length: 300
 
 activation_collection:
-  model_id: meta-llama/Llama-3.2-1B-Instruct
-  layers: null # If null, middle 50% layers will be derived
-  max_length: 720
+  model_id: meta-llama/Llama-3.2-8B-Instruct
+  layers: null # If null, middle 25% layers will be derived
+  max_length: 300
   num_samples: 1000
   seed: 42
   dataset: "./data/training_datasets.zip.enc.extracted/bad_medical_advice.jsonl"
   # dataset: Elriggs/openwebtext-100k
   download_zip_colab: false
   push_to_hub:
-    enabled: false
+    enabled: true
     private: true
-
-precomputed_activations:
-  enabled: false
-  modelA_acts_path: "collected_activations/layer_13_activations.pt" # Example path
-  modelB_acts_path: "collected_activations/layer_7_activations.pt"  # Example path
