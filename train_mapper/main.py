@@ -13,6 +13,7 @@ import yaml
 import logging
 import json
 import argparse
+from pathlib import Path
 from trainer import ModelTrainer
 from typing import Optional, List, Dict
 from torch.optim.lr_scheduler import ReduceLROnPlateau
@@ -22,6 +23,9 @@ from datasets import load_dataset
 import os
 
 from utils import add_pad_token
+
+from huggingface_hub.utils import disable_progress_bars
+disable_progress_bars()
 
 try:
     from bitsandbytes.optim import AdamW8bit as AdamW
@@ -58,7 +62,7 @@ def main(config: Dict):
 
     if activation_method == "precomputed":
 
-        logger.info("Precomputed activations enabled. Loading metadata without full models...")
+        print("Precomputed activations enabled. Loading metadata without full models...")
 
         precomputed_config = config['precomputed_activations']
 
@@ -81,14 +85,14 @@ def main(config: Dict):
             'max_seq_length': modelB_max_seq_length,
         })
 
-        _, modelA_tokenizer = FastLanguageModel.from_pretrained(modelA_name, token=HF_TOKEN)
-        _, modelB_tokenizer = FastLanguageModel.from_pretrained(modelB_name, token=HF_TOKEN)
+        unsloth_modelA_name = f"unsloth/{modelA_name.split('/')[-1]}"
+        unsloth_modelB_name = f"unsloth/{modelB_name.split('/')[-1]}"
 
-        del _
-        torch.cuda.empty_cache()
+        modelA_tokenizer = AutoTokenizer.from_pretrained(unsloth_modelA_name, token=HF_TOKEN)
+        modelB_tokenizer = AutoTokenizer.from_pretrained(unsloth_modelB_name, token=HF_TOKEN)
 
-        modelA_hf_config = AutoConfig.from_pretrained(modelA_name, token=HF_TOKEN)
-        modelB_hf_config = AutoConfig.from_pretrained(modelB_name, token=HF_TOKEN)
+        modelA_hf_config = AutoConfig.from_pretrained(unsloth_modelA_name, token=HF_TOKEN)
+        modelB_hf_config = AutoConfig.from_pretrained(unsloth_modelB_name, token=HF_TOKEN)
 
         modelA = None
         modelB = None
@@ -115,7 +119,7 @@ def main(config: Dict):
         )
 
     elif activation_method == "live_computed":
-        logger.info("Live-computed activations. Loading full models...")
+        print("Live-computed activations. Loading full models...")
 
         live_config = config['live_computed_activations']
 
@@ -183,11 +187,14 @@ def main(config: Dict):
 
     config["modelA_dim"] = modelA_dim
     config["modelB_dim"] = modelB_dim
+
+    print(f"{modelA_name} dimension: {modelA_dim}")
+    print(f"{modelB_name} dimension: {modelB_dim}")
             
     total_train_batches = len(train_loader)
     total_val_batches = len(val_loader) if val_loader else 0
-    logger.info(f"Total training batches: {total_train_batches}")
-    logger.info(f"Total validation batches: {total_val_batches}")
+    print(f"Total training batches: {total_train_batches}")
+    print(f"Total validation batches: {total_val_batches}")
 
     mapper_AtoB = torch.nn.Linear(modelA_dim, modelB_dim).to(device)
     mapper_BtoA = torch.nn.Linear(modelB_dim, modelA_dim).to(device)
@@ -198,16 +205,16 @@ def main(config: Dict):
     optimizer_BtoA = AdamW(mapper_BtoA.parameters(), lr=float(config['mapper_train']['learning_rate'])) # TODO
     scheduler_BtoA = ReduceLROnPlateau(optimizer_BtoA, mode='min', factor=0.5, patience=5)
 
-    modelA_name = config['modelA']['name']
-    simplified_modelA_name = modelA_name.split("/")[1].replace("-Instruct", "").replace("-3.2", "").replace("2.5", "")
-
-    modelB_name = config['modelB']['name']
-    simplified_modelB_name = modelB_name.split("/")[1].replace("-Instruct", "").replace("-3.2", "").replace("2.5", "")
+    # Extract dataset type from path stem (e.g. "bad_medical_advice" from ".../bad_medical_advice.jsonl")
+    # Falls back to the last component of a HF dataset id.
+    activation_method = config['mapper_train']['activation_method']
+    dataset_path = config.get(
+        'precomputed_activations' if activation_method == 'precomputed' else 'live_computed_activations', {}
+    ).get('dataset', '')
+    dataset_type = Path(dataset_path).stem if dataset_path else ""
 
     ### Train a mapper from A to B
-    print("Training a mapper from A to B")
-
-    run_name = f"""linear {simplified_modelA_name} to {simplified_modelB_name} Layer {config['modelA']['layer']} to {config['modelB']['layer']}"""
+    print(f"Training a mapper from {modelA_name} to {modelB_name}")
 
     trainer = ModelTrainer(
         mapper=mapper_AtoB,
@@ -220,7 +227,7 @@ def main(config: Dict):
         project_name=config['project_name'],
         hf_username=HF_USERNAME,
         src_is_A_tgt_is_B=True,
-        run_name=run_name,
+        dataset_type=dataset_type,
         config=config,
         trim_activations=config['mapper_train']['trim_activations'],
         cross_architecture=config['mapper_train']['cross_architecture'],
@@ -233,14 +240,12 @@ def main(config: Dict):
         num_epochs=config['mapper_train']['epochs']
     )
 
-    logger.info("Training completed successfully")
+    print("Training completed successfully")
 
     torch.cuda.empty_cache()
 
     ### Train a mapper from B to A
-    print("Training a mapper B to A")
-
-    run_name = f"""linear {simplified_modelB_name} to {simplified_modelA_name} Layer {config['modelB']['layer']} to {config['modelA']['layer']}"""
+    print(f"Training a mapper from {modelB_name} to {modelA_name}")
 
     trainer = ModelTrainer(
         mapper=mapper_BtoA,
@@ -253,7 +258,7 @@ def main(config: Dict):
         project_name=config['project_name'],
         hf_username=HF_USERNAME,
         src_is_A_tgt_is_B=False,
-        run_name=run_name,
+        dataset_type=dataset_type,
         config=config,
         trim_activations=config['mapper_train']['trim_activations'],
         cross_architecture=config['mapper_train']['cross_architecture'],
@@ -266,7 +271,7 @@ def main(config: Dict):
         num_epochs=config['mapper_train']['epochs']
     )
 
-    logger.info("Training completed successfully")
+    print("Training completed successfully")
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Train an affine mapper.")

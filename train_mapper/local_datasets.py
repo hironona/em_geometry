@@ -403,8 +403,6 @@ class PrecomputedActivationDataset:
 
         self.modelA_activations = result['modelA_activations']
         self.modelB_activations = result['modelB_activations']
-        self.modelA_input_ids = result['modelA_input_ids']
-        self.modelB_input_ids = result['modelB_input_ids']
         self.modelA_attention_mask = result['modelA_attention_mask']
         self.modelB_attention_mask = result['modelB_attention_mask']
         self.total_samples = result['total_samples']
@@ -437,7 +435,7 @@ class PrecomputedActivationDataset:
                 f"beyond the model's configured sequence length. Use a repo with max_length "
                 f"<= {model_max_length}, or increase the model's max_seq_length."
             )
-        logger.info(f"Downloading {model_key} activations from {repo_id} layer_{layer}...")
+        print(f"Downloading {model_key} activations from {repo_id} layer_{layer}...")
         return hf_hub_download(
             repo_id=repo_id,
             filename=f"layer_{layer}/activations.pt",
@@ -468,8 +466,6 @@ class PrecomputedActivationDataset:
 
         modelA_pre_space_token_indices = []
         modelB_pre_space_token_indices = []
-        modelA_input_ids = []
-        modelB_input_ids = []
         modelA_attention_masks = []
         modelB_attention_masks = []
 
@@ -510,8 +506,6 @@ class PrecomputedActivationDataset:
                 return_tensors='pt'
             )
 
-            modelA_input_ids.append(modelA_inputs['input_ids'].squeeze(0))
-            modelB_input_ids.append(modelB_inputs['input_ids'].squeeze(0))
             modelA_attention_masks.append(modelA_inputs['attention_mask'].squeeze(0))
             modelB_attention_masks.append(modelB_inputs['attention_mask'].squeeze(0))
 
@@ -527,9 +521,7 @@ class PrecomputedActivationDataset:
         '''
         
         # Stack inputs
-        modelA_input_ids = torch.stack(modelA_input_ids)  # (num_samples, max_seq_len)
         modelA_attention_mask = torch.stack(modelA_attention_masks)
-        modelB_input_ids = torch.stack(modelB_input_ids)  # (num_samples, max_seq_len)
         modelB_attention_mask = torch.stack(modelB_attention_masks)
 
         modelA_acts_collected = []
@@ -584,8 +576,6 @@ class PrecomputedActivationDataset:
         return {
             'modelA_activations': modelA_acts_collected,
             'modelB_activations': modelB_acts_collected,
-            'modelA_input_ids': modelA_input_ids.to(self.device),
-            'modelB_input_ids': modelB_input_ids.to(self.device),
             'modelA_attention_mask': modelA_att_masks_collected,
             'modelB_attention_mask': modelB_att_masks_collected,
             'total_samples': total_samples,
@@ -595,14 +585,13 @@ class PrecomputedActivationDataset:
         return self.modelA_activations.shape[0]  # or modelB_activations.shape[0], they should be the same
 
     def __getitem__(self, idx) -> dict:
+        batch_size = len(self.modelA_activations[idx])
         return {
             'modelA_activations': self.modelA_activations[idx],
             'modelB_activations': self.modelB_activations[idx],
-            'modelA_input_ids': self.modelA_input_ids[idx],
-            'modelB_input_ids': self.modelB_input_ids[idx],
             'modelA_attention_mask': self.modelA_attention_mask[idx],
             'modelB_attention_mask': self.modelB_attention_mask[idx],
-            'total_samples': self.total_samples,
+            'total_samples': batch_size,
         }
 
 

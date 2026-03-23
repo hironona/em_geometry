@@ -16,6 +16,7 @@ import os
 import tempfile
 import json
 import os
+from safetensors.torch import save_file as save_safetensors
 import dotenv
 dotenv.load_dotenv()
 HF_TOKEN = os.getenv("HF_TOKEN")
@@ -28,7 +29,6 @@ logger = logging.getLogger(__name__)
 @dataclass
 class TrainMetrics:
     train_reconstruction_loss: float
-    train_lm_loss: float
     train_cosine_sim: float
     train_fvu: float
     total_samples: int
@@ -65,6 +65,7 @@ class ModelTrainer:
         src_is_A_tgt_is_B: bool,
         project_name="",
         run_name="",
+        dataset_type="",
         config=None,
         trim_activations=False,
         cross_architecture=False,
@@ -84,60 +85,79 @@ class ModelTrainer:
         self.run_name = run_name
         self.hf_username = hf_username
         self.project_name = project_name
+        self.dataset_type = dataset_type
         self.hf_api = HfApi(token=HF_TOKEN)
         self.device = device
    
-    def save_to_huggingface(self, checkpoint_data, repo_name, save_type='checkpoint', global_step=0, run_name=""):
-        """
-        Save model or checkpoint to HuggingFace Hub.
-        Args:
-            checkpoint_data (dict): Model state and metrics
-            repo_name (str): HF repository name (e.g., "martian-mech-interp-grant/autoencoder/code_backdoors")
-            save_type (str): Either 'checkpoint' or 'model'
-            global_step: only for checkpoints number
-        """
+    def _get_repo_name(self):
+        """Build repo ID: {hf_username}/{project_name}_{dataset_type}_{srcModel}_to_{tgtModel}"""
         if self.src_is_A_tgt_is_B:
             src_name = _get_simplified_name(self.config['modelA']['name'])
             tgt_name = _get_simplified_name(self.config['modelB']['name'])
         else:
             src_name = _get_simplified_name(self.config['modelB']['name'])
             tgt_name = _get_simplified_name(self.config['modelA']['name'])
-        # Create repo name using run_name (replacing spaces with underscores and making it URL-friendly)
-        # run_name = "-".join([
-        #     "linear",
-        #     f"{src_name}_l{self.source_layer}_to_{tgt_name}_l{self.target_layer}_resid_post",
-        # ])
-        # First check if repo exists
+        project = self.project_name.lower().replace(" ", "_")
+        parts = [project]
+        if self.dataset_type:
+            parts.append(self.dataset_type)
+        parts.append(f"{src_name}_to_{tgt_name}")
+        return f"{self.hf_username}/{'_'.join(parts)}"
+
+    def _ensure_repo_exists(self, repo_name):
         try:
             self.hf_api.repo_info(repo_id=repo_name)
-            logger.info(f"Found existing repository: {repo_name}")
-        except Exception as e:
-            logger.info(f"Repository {repo_name} not found. Creating new repository...")
+            print(f"Found existing repository: {repo_name}")
+        except Exception:
+            print(f"Repository {repo_name} not found. Creating...")
             self.hf_api.create_repo(
                 repo_id=repo_name,
-                private=True,  # or False if you want it public
-                exist_ok=True,  # This prevents errors if repo exists
-                token=HF_TOKEN  # Add token here
+                private=True,
+                exist_ok=True,
+                token=HF_TOKEN
             )
-            logger.info(f"Successfully created repository: {repo_name}")
+            print(f"Successfully created repository: {repo_name}")
 
-        # Determine folder path based on save type
+    def save_to_huggingface(self, checkpoint_data, save_type='checkpoint', global_step=0):
+        """
+        Save mapper weights to HuggingFace Hub using safetensors.
+
+        Layout:
+          Final model:  layer_{src}_to_{tgt}/mapper.safetensors
+                        layer_{src}_to_{tgt}/config.json
+          Checkpoint:   layer_{src}_to_{tgt}/checkpoints/step_{N}/mapper.safetensors
+                        layer_{src}_to_{tgt}/checkpoints/step_{N}/config.json
+
+        Args:
+            checkpoint_data (dict): Must contain 'model_state_dict' and optional 'metrics'.
+            save_type (str): 'checkpoint' or 'model'.
+            global_step (int): Step index, used only for checkpoints.
+        """
+        repo_name = self._get_repo_name()
+        self._ensure_repo_exists(repo_name)
+
+        layer_dir = f"layer_{self.source_layer}_to_{self.target_layer}"
         if save_type == 'checkpoint':
-            folder_path = f"checkpoints/step_{global_step}"
-        else:  # model
-            folder_path = f"model"
+            folder_path = f"{layer_dir}/checkpoints/step_{global_step}"
+        else:
+            folder_path = layer_dir
 
         with tempfile.TemporaryDirectory() as tmp_dir:
-            # Save model weights
-            torch.save(checkpoint_data['model_state_dict'], 
-                    os.path.join(tmp_dir, "pytorch_model.bin"))
-            
-            # Save config and metrics
+            # Save weights as safetensors
+            save_safetensors(
+                checkpoint_data['model_state_dict'],
+                os.path.join(tmp_dir, "mapper.safetensors")
+            )
+
+            # Save config + metrics
             config_data = {
                 **self.config,
+                "source_layer": self.source_layer,
+                "target_layer": self.target_layer,
+                "src_is_A_tgt_is_B": self.src_is_A_tgt_is_B,
                 "metrics": checkpoint_data.get('metrics', {})
             }
-            
+
             with open(os.path.join(tmp_dir, 'config.json'), 'w') as f:
                 json.dump(config_data, f, indent=2)
 
@@ -146,12 +166,12 @@ class ModelTrainer:
                     repo_id=repo_name,
                     folder_path=tmp_dir,
                     path_in_repo=folder_path,
-                    commit_message=f"Upload {save_type} for {run_name}",
-                    token=HF_TOKEN 
+                    commit_message=f"Upload {save_type} layer_{self.source_layer}_to_{self.target_layer} step={global_step}",
+                    token=HF_TOKEN
                 )
-                logger.info(f"Successfully saved {save_type} to {repo_name}/{folder_path}")
+                print(f"Saved {save_type} to {repo_name}/{folder_path}")
             except Exception as e:
-                logger.error(f"Failed to upload to HuggingFace: {str(e)}")
+                print(f"Failed to upload to HuggingFace: {str(e)}")
  
 
     def validate_attention_mask(self, attention_mask: torch.Tensor) -> None:
@@ -183,38 +203,6 @@ class ModelTrainer:
             assert torch.all(mask[:first_zero_index] == 1), (
                 f"Attention mask row {i} is invalid: not all 1's before the first 0."
             )
-
-    def trim_input_tensor(self, input_tensor: torch.Tensor, attention_mask: torch.Tensor):
-        """
-        Trims an input tensor based on the lengths of valid tokens in the attention mask.
-        The attention mask is expected to have all 1's followed by all 0's in each row.
-        Args:
-            input_tensor (torch.Tensor): A 3D tensor of shape (batch_size, sequence_length, feature_dim).
-            attention_mask (torch.Tensor): A 2D tensor of shape (batch_size, sequence_length)  containing binary values (0 or 1).
-        Returns:
-            List[torch.Tensor]: A list of tensors, each trimmed to the length of valid tokens  according to the attention mask.
-        Raises:
-            AssertionError: If any row in the attention mask is not all 1's followed by all 0's.
-        """
-        # Validate the attention mask
-        # self.validate_attention_mask(attention_mask)
-
-        # Step 1: Calculate the valid token lengths for each sequence in the batch
-        valid_lengths = attention_mask.sum(dim=1)  # Shape: [batch_size]
-        # Step 2: Find the maximum valid length across all sequences
-        max_valid_length = valid_lengths.max().item()
-
-        # Step 3: Trim the input tensor to the max valid length (rectangular tensor)
-        trimmed_mask = attention_mask[:, :max_valid_length]
-
-        if input_tensor.dim() == 2:  # 2D tensor: [batch_size, sequence_length]
-            trimmed_tensor = input_tensor[:, :max_valid_length]
-        elif input_tensor.dim() == 3:  # 3D tensor: [batch_size, sequence_length, feature_dim]
-            trimmed_tensor = input_tensor[:, :max_valid_length, :]
-        else:
-            raise ValueError(f"Unsupported input tensor dimension: {input_tensor.dim()}")
-
-        return trimmed_tensor, trimmed_mask
 
     def compute_cosine_similarity(self, pred, target, attention_mask):
         """Compute average cosine similarity for non-padded tokens"""
@@ -269,61 +257,12 @@ class ModelTrainer:
         fvu = squared_diff.sum() / (target_variance.sum() + 1e-8)
         return fvu.item()
 
-    
-    def compute_lm_loss(self, target_input_ids, mapped_acts, target_attention_mask):
-        """Compute language modeling loss without affecting gradients"""
-        if self.target_model is None:
-            return 0.0
-
-        # Get original logits
-        original_output = self.target_model.model(target_input_ids)
-        original_logits = original_output.logits
-        target_dtype = next(self.target_model.model.parameters()).dtype
-
-        # Get logits with mapped activations
-        self.target_model.inject_partial_activation(
-            layer_idx=self.target_layer,
-            #make sure that the mapped_acts is in correct d_type for target model
-            custom_activation=mapped_acts.to(target_dtype)
-        )
-        #add attention mask to the target model
-        mapped_output = self.target_model.model(target_input_ids)
-        mapped_logits = mapped_output.logits
-
-
-        # Calculate KL divergence between logits
-        log_probs = torch.nn.functional.log_softmax(mapped_logits, dim=-1)
-        probs = torch.nn.functional.softmax(original_logits, dim=-1)
-        
-        # Calculate token-wise KL divergence
-        kl_div = torch.nn.functional.kl_div(
-            log_probs,
-            probs,
-            reduction='none'
-        )
-        
-        # Sum over vocab dimension first to get per-token KL
-        token_kl = kl_div.sum(dim=-1)  # [batch_size, seq_len]
-        
-        # Apply attention mask to only include non-padded tokens
-        masked_kl = token_kl * target_attention_mask
-        
-        # Average over non-padded tokens only
-        num_tokens = target_attention_mask.sum() + 1e-8
-        masked_kl_div = masked_kl.sum() / num_tokens
-
-        # Clear the replacement hook
-        self.target_model.clear_replacement(self.target_layer)
-
-        return masked_kl_div.item()
-
 
     def train_epoch(self, dataloader, global_step, epoch):
         self.mapper.train()
         dtype = next(self.mapper.parameters()).dtype
         epoch_fvu = 0
         epoch_reconstruction_loss = 0
-        epoch_lm_loss = 0
         epoch_cosine_sim = 0
         total_batches = len(dataloader)
         checkpoint_interval = math.ceil(total_batches / 5)
@@ -336,26 +275,18 @@ class ModelTrainer:
 
         pbar = tqdm(enumerate(dataloader), total=total_batches, desc=f"Epoch {epoch}")
         for batch_idx, batch in pbar:
-            if batch['total_samples'] == 0:
+            total_samples_batch = batch['total_samples'].sum().item()
+            if total_samples_batch == 0:
+                print(f"Skipping batch {batch_idx} with zero samples.")
                 continue
 
             # Unpack batch dictionary
             source_acts = batch[f"{src_model_key}_activations"].to(self.device, dtype=dtype)
             target_acts = batch[f"{tgt_model_key}_activations"].to(self.device, dtype=dtype)
             source_attention_mask = batch[f"{src_model_key}_attention_mask"].to(self.device, dtype=torch.bool)
-            target_input_ids = batch[f"{tgt_model_key}_input_ids"].to(self.device, dtype=torch.long)
             target_attention_mask = batch[f"{tgt_model_key}_attention_mask"].to(self.device, dtype=torch.bool)
             
-            total_samples += batch['total_samples']
-
-            # Let's see how the source and target attention masks compare
-
-            if self.trim_activations:   # Tensors should be already trimmed through Collator
-                copy_target_attention_mask = target_attention_mask.clone()
-                source_acts, source_attention_mask = self.trim_input_tensor(input_tensor=source_acts, attention_mask=source_attention_mask)
-                target_acts, target_attention_mask = self.trim_input_tensor(input_tensor=target_acts, attention_mask=target_attention_mask)
-                target_input_ids, _ = self.trim_input_tensor(input_tensor=target_input_ids, attention_mask=copy_target_attention_mask)
-
+            total_samples += total_samples_batch
 
             # Forward pass through mapper
             mapped_acts = self.mapper(source_acts)
@@ -365,7 +296,6 @@ class ModelTrainer:
                 target_acts,
                 target_attention_mask
             )
-            #add a logger info to check if this was correctly calculated
             
             # Backward pass on reconstruction loss only
             reconstruction_loss.backward()
@@ -377,7 +307,6 @@ class ModelTrainer:
             self.optimizer.zero_grad()
             # Compute LM loss for monitoring (no gradients)
             with torch.no_grad():
-                # lm_loss = self.compute_lm_loss(target_input_ids, mapped_acts, target_attention_mask)
                 cosine_sim = self.compute_cosine_similarity(mapped_acts, target_acts, target_attention_mask)
                 fvu = self.compute_fvu(mapped_acts, target_acts, target_attention_mask)
             
@@ -386,11 +315,6 @@ class ModelTrainer:
                 'cos_sim': f"{cosine_sim:.4f}", 
                 'fvu': f"{fvu:.4f}"
             })
-            
-            # Log only on main process
-            if batch_idx % 10 == 0:
-                # logger.info(f'Batch {batch_idx+1}, Reconstruction Loss: {reconstruction_loss.item():.6f}, LM Loss: {lm_loss:.6f} Cosine Similarity: {cosine_sim:.6f} FVU: {fvu:.6f}')
-                logger.info(f'Batch {batch_idx+1}, Reconstruction Loss: {reconstruction_loss.item():.6f}, Cosine Similarity: {cosine_sim:.6f} FVU: {fvu:.6f}')
             
             # Save checkpoint at intervals
             if (batch_idx + 1) % checkpoint_interval == 0:
@@ -401,32 +325,23 @@ class ModelTrainer:
                     'metrics': {
                         'fvu': fvu,
                         'reconstruction_loss': reconstruction_loss.item(),
-                        # 'lm_loss': lm_loss,
                         'cosine_similarity': cosine_sim,
                         'total_samples': total_samples
                     }
                 }
-                #project names should reflect the task
-                #Possible intuitive project names should be: "i hate you", "code vulnerabilities", "refusal", "corrupted capabilities"
-                modified_project_name = self.project_name.lower().replace(" ", "_")
-                # Added username
-                repo_name = os.path.join(self.hf_username, modified_project_name)
-                self.save_to_huggingface(checkpoint_data,repo_name, save_type ='checkpoint', global_step=global_step)
-
+                self.save_to_huggingface(checkpoint_data, save_type='checkpoint', global_step=global_step)
                 global_step += 1
-                epoch_fvu += fvu
-                epoch_reconstruction_loss += reconstruction_loss.item()
-                # epoch_lm_loss += lm_loss
-                epoch_cosine_sim += cosine_sim       
+            
+            epoch_fvu += fvu
+            epoch_reconstruction_loss += reconstruction_loss.item()
+            epoch_cosine_sim += cosine_sim       
         # Calculate average losses for the epoch
 
         avg_fvu = epoch_fvu / len(dataloader)
         avg_train_reconstruction_loss = epoch_reconstruction_loss / len(dataloader)
-        # avg_lm_loss = epoch_lm_loss / len(dataloader)
         avg_cosine_sim = epoch_cosine_sim / len(dataloader)
 
-        # metrics = TrainMetrics(train_reconstruction_loss=avg_train_reconstruction_loss, train_lm_loss=avg_lm_loss, train_cosine_sim=avg_cosine_sim, train_fvu=avg_fvu)
-        metrics = TrainMetrics(train_reconstruction_loss=avg_train_reconstruction_loss, train_lm_loss=100, train_cosine_sim=avg_cosine_sim, train_fvu=avg_fvu, total_samples=total_samples)
+        metrics = TrainMetrics(train_reconstruction_loss=avg_train_reconstruction_loss, train_cosine_sim=avg_cosine_sim, train_fvu=avg_fvu, total_samples=total_samples)
         
         return metrics, global_step
 
@@ -434,7 +349,6 @@ class ModelTrainer:
         self.mapper.eval()
         dtype = next(self.mapper.parameters()).dtype
         val_reconstruction_loss = 0
-        # val_lm_loss = 0
         val_cosine_sim = 0
         count_unequal_batches = 0
         src_model_key = "modelA" if self.src_is_A_tgt_is_B else "modelB"
@@ -445,16 +359,17 @@ class ModelTrainer:
         with torch.no_grad():
             pbar = tqdm(enumerate(dataloader), total=len(dataloader), desc="Validation")
             for batch_idx, batch in pbar:
-                if batch['total_samples'] == 0:
+                total_samples_batch = batch['total_samples'].sum().item()
+                if total_samples_batch == 0:
+                    print(f"Skipping batch {batch_idx} with zero samples.")
                     continue
 
                 source_acts = batch[f"{src_model_key}_activations"].to(self.device, dtype=dtype)
                 target_acts = batch[f"{tgt_model_key}_activations"].to(self.device, dtype=dtype)
-                target_input_ids = batch[f"{tgt_model_key}_input_ids"].to(self.device)
                 target_attention_mask = batch[f"{tgt_model_key}_attention_mask"].to(self.device)
                 source_attention_mask = batch[f"{src_model_key}_attention_mask"].to(self.device)
                 
-                total_samples += batch['total_samples']
+                total_samples += total_samples_batch
 
                 # Check if masks are different and unify them if there is a cross-architecture transfer
                 if not torch.equal(source_attention_mask, target_attention_mask):
@@ -476,12 +391,6 @@ class ModelTrainer:
                     else:
                         print("Stopping training as attention masks differ in non-cross-architecture setup")
                         raise ValueError("Attention masks must be identical for non-cross-architecture training")
-                                        
-                if self.trim_activations:
-                    copy_target_attention_mask = target_attention_mask.clone()
-                    source_acts, source_attention_mask = self.trim_input_tensor(input_tensor=source_acts, attention_mask=source_attention_mask)
-                    target_acts, target_attention_mask = self.trim_input_tensor(input_tensor=target_acts, attention_mask=target_attention_mask)
-                    target_input_ids, _ = self.trim_input_tensor(input_tensor=target_input_ids, attention_mask=copy_target_attention_mask)
 
                 # Forward pass through mapper
                 mapped_acts = self.mapper(source_acts)
@@ -490,11 +399,9 @@ class ModelTrainer:
                 reconstruction_loss = self.masked_mse_loss(mapped_acts, target_acts, target_attention_mask)
 
                 # Language Modeling Loss (for monitoring)
-                # lm_loss = self.compute_lm_loss(target_input_ids, mapped_acts, target_attention_mask)
                 cosine_sim = self.compute_cosine_similarity(mapped_acts, target_acts, target_attention_mask)
                 
                 val_reconstruction_loss += reconstruction_loss.item()
-                # val_lm_loss += lm_loss
                 val_cosine_sim += cosine_sim
 
                 pbar.set_postfix({
@@ -504,7 +411,6 @@ class ModelTrainer:
     
         return (
             val_reconstruction_loss / len(dataloader),
-            # val_lm_loss / len(dataloader),
             val_cosine_sim / len(dataloader),
             total_samples
         )
@@ -526,18 +432,15 @@ class ModelTrainer:
             )
             train_total_samples_epoch = metrics.total_samples
             
-            logger.info(f"Epoch {epoch}: Train Reconstruction Loss = {metrics.train_reconstruction_loss:.6f}")
-            # logger.info(f"Epoch {epoch}: Train LM Loss = {metrics.train_lm_loss:.6f}")
-            logger.info(f"Epoch {epoch}: Train Cosine Similarity = {metrics.train_cosine_sim:.6f}")
-            logger.info(f"Epoch {epoch}: Train FVU = {metrics.train_fvu:.6f}")
+            print(f"Epoch {epoch}: Train Reconstruction Loss = {metrics.train_reconstruction_loss:.6f}")
+            print(f"Epoch {epoch}: Train Cosine Similarity = {metrics.train_cosine_sim:.6f}")
+            print(f"Epoch {epoch}: Train FVU = {metrics.train_fvu:.6f}")
             
             # Validation
             if val_loader:
-                # val_reconstruction_loss, val_lm_loss, val_cosine_sim = self.validate(val_loader)
                 val_reconstruction_loss, val_cosine_sim, val_total_samples_epoch = self.validate(val_loader)
-                logger.info(f"Epoch {epoch}: Val Reconstruction Loss = {val_reconstruction_loss:.6f}")
-                # logger.info(f"Epoch {epoch}: Val LM Loss = {val_lm_loss:.6f}")
-                logger.info(f"Epoch {epoch}: Val Cosine Similarity = {val_cosine_sim:.6f}")
+                print(f"Epoch {epoch}: Val Reconstruction Loss = {val_reconstruction_loss:.6f}")
+                print(f"Epoch {epoch}: Val Cosine Similarity = {val_cosine_sim:.6f}")
                 current_loss = val_reconstruction_loss
             else:
                 current_loss = metrics.train_reconstruction_loss
@@ -552,7 +455,6 @@ class ModelTrainer:
                 'metrics': {
                     'fvu': metrics.train_fvu,
                     'reconstruction_loss': metrics.train_reconstruction_loss,
-                    # 'lm_loss': metrics.train_lm_loss,
                     'cosine_similarity': metrics.train_cosine_sim
                 },
                 'train_total_samples': train_total_samples_epoch,
@@ -561,19 +463,4 @@ class ModelTrainer:
             self.config['train_total_samples'] = train_total_samples_epoch
             self.config['val_total_samples'] = val_total_samples_epoch
 
-            if self.src_is_A_tgt_is_B:
-                src_name = _get_simplified_name(self.config['modelA']['name'])
-                tgt_name = _get_simplified_name(self.config['modelB']['name'])
-            else:
-                src_name = _get_simplified_name(self.config['modelB']['name'])
-                tgt_name = _get_simplified_name(self.config['modelA']['name'])
-
-            run_name = "-".join([
-                "linear",
-                f"{src_name}_l{self.source_layer}_to_{tgt_name}_l{self.target_layer}_resid_post",
-            ])
-
-            modified_project_name = self.project_name.lower().replace(" ", "_")
-            repo_name = f"{modified_project_name}_{run_name}"   
-            repo_name = os.path.join(self.hf_username, repo_name)
-            self.save_to_huggingface(checkpoint_data,repo_name, save_type ='model', run_name=run_name)
+            self.save_to_huggingface(checkpoint_data, save_type='model')

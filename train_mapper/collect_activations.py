@@ -17,6 +17,9 @@ dotenv.load_dotenv()
 HF_TOKEN = os.getenv("HF_TOKEN")
 HF_USERNAME = os.getenv("HF_USERNAME")
 
+from huggingface_hub.utils import disable_progress_bars
+disable_progress_bars()
+
 # Reuse caching logic if any
 from model_wrapper import ModelWrapper
 from huggingface_hub import HfApi
@@ -53,7 +56,7 @@ def push_layers_to_hub(model_id, dataset_name, num_samples, max_length, target_l
 
     api = HfApi(token=HF_TOKEN)
     api.create_repo(repo_id=repo_id, repo_type="dataset", private=private, exist_ok=True)
-    logger.info(f"HF repo: {repo_id}")
+    print(f"HF repo: {repo_id}")
 
     mask_path = output_dir / "attention_masks.pt"
     for l in target_layers:
@@ -63,16 +66,14 @@ def push_layers_to_hub(model_id, dataset_name, num_samples, max_length, target_l
             path_in_repo=f"layer_{l}/activations.pt",
             repo_id=repo_id,
             repo_type="dataset",
-            disable_progress_bar=True,
         )
         api.upload_file(
             path_or_fileobj=str(mask_path),
             path_in_repo=f"layer_{l}/attention_masks.pt",
             repo_id=repo_id,
             repo_type="dataset",
-            disable_progress_bar=True,
         )
-        logger.info(f"Pushed layer {l} to {repo_id}")
+        print(f"Pushed layer {l} to {repo_id}")
 
 
 def main(config):
@@ -93,10 +94,10 @@ def main(config):
     torch.cuda.manual_seed(seed)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logger.info(f"Using device: {device}")
+    print(f"Using device: {device}")
 
     # Load Model & Tokenizer
-    logger.info(f"Loading model {model_id}...")
+    print(f"Loading model {model_id}...")
     try:
         model, tokenizer = FastLanguageModel.from_pretrained(
             model_name=model_id,
@@ -133,7 +134,7 @@ def main(config):
     wrapped_model = ModelWrapper(model, device=device)
 
     # Load dataset
-    logger.info(f"Loading dataset {dataset_name}...")
+    print(f"Loading dataset {dataset_name}...")
     # If the dataset name ends with .jsonl or .json, we assume it's a local emergent misalingnment dataset.
     if dataset_name.endswith(".jsonl") or dataset_name.endswith(".json"):
         dataset = load_em_dataset(dataset_name)
@@ -141,7 +142,7 @@ def main(config):
         dataset = load_dataset(dataset_name, split='train')
     
     samples = []
-    logger.info(f"Collecting {num_samples} samples...")
+    print(f"Collecting {num_samples} samples...")
     for item in dataset:
         if len(samples) >= num_samples:
             break
@@ -157,7 +158,7 @@ def main(config):
     all_activations = {l: [] for l in target_layers}
     all_attention_masks = []
 
-    logger.info(f"Extracting activations for {len(samples)} samples across {len(target_layers)} layers...")
+    print(f"Extracting activations for {len(samples)} samples across {len(target_layers)} layers...")
 
     # We will process them one by one to avoid OOM or we can batch them. Processing one by one is safer here.
     for i, text in enumerate(tqdm(samples)):
@@ -200,7 +201,7 @@ def main(config):
             all_activations[l].append(act)
             
     # Stack and save
-    logger.info("Stacking and saving activations...")
+    print("Stacking and saving activations...")
     # Stack attention masks: (num_samples, max_length)
     stacked_attn_masks = torch.stack(all_attention_masks)
     mask_path = output_dir / "attention_masks.pt"
@@ -222,16 +223,16 @@ def main(config):
                 # (num_samples, max_length, hidden_dim)
                 act_path = output_dir / f"layer_{l}_activations.pt"
                 zipf.write(act_path, arcname=f"layer_{l}_activations.pt")
-        logger.info(f"Files saved and compressed into {zip_filename}")
+        print(f"Files saved and compressed into {zip_filename}")
         # if 'google.colab' in sys.modules:
-        #     logger.info("Detected Google Colab. Prompting download...")
+        #     print("Detected Google Colab. Prompting download...")
         #     from google.colab import files
         #     files.download(zip_filename)
 
     # Push to HuggingFace Hub
     push_config = act_config.get('push_to_hub', {})
     if push_config.get('enabled', True):
-        logger.info("Pushing activations to HuggingFace Hub...")
+        print("Pushing activations to HuggingFace Hub...")
         push_layers_to_hub(
             model_id=model_id,
             dataset_name=dataset_name,
